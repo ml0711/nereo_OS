@@ -1,0 +1,29 @@
+# dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# builds
+dist/
+build/
+.next/
+out/
+
+# env / secrets
+.env
+.env.*
+!.env.example
+
+# logs
+*.log
+npm-debug.log*
+logs/
+
+# os / editor
+.DS_Store
+.idea/
+*.swp
+
+# docker / local data
+**/pgdata/
+**/.volumes/

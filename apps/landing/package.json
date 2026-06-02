@@ -1,0 +1,10 @@
+{
+  "name": "@nereoos/landing",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Minimale Landingpage (Domain-Root) — Markenname + Login-Einstieg",
+  "scripts": {
+    "dev": "echo \"TODO: landing dev server\" && exit 0",
+    "build": "echo \"TODO: landing build\" && exit 0"
+  }
+}

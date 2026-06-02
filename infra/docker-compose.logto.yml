@@ -1,0 +1,28 @@
+# LogTo (self-hosted Auth) + dedizierte Postgres-DB.
+# Diese DB enthält NUR Auth-Daten — keine SharePoint-/Analyse-Daten (siehe CLAUDE.md §2).
+# Auf Coolify als zwei Deployments: `auth` (logto) und `db` (postgres).
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: logto
+      POSTGRES_PASSWORD: ${LOGTO_DB_PASSWORD:-changeme}
+      POSTGRES_DB: logto
+    volumes:
+      - ./pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  auth:
+    image: svhd/logto:latest
+    depends_on:
+      - db
+    environment:
+      DB_URL: postgres://logto:${LOGTO_DB_PASSWORD:-changeme}@db:5432/logto
+      ENDPOINT: ${LOGTO_ENDPOINT:-}
+      TRUST_PROXY_HEADER: "1"
+    entrypoint: ["sh", "-c", "npm run cli db seed -- --swe-role && npm start"]
+    ports:
+      - "3001:3001" # LogTo
+      - "3002:3002" # LogTo Admin Console
+    restart: unless-stopped

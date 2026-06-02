@@ -1,0 +1,12 @@
+{
+  "name": "@nereoos/app",
+  "version": "0.0.1",
+  "private": true,
+  "description": "nereo OS App (app.) — Frontend + Backend + KI-Agenten",
+  "scripts": {
+    "dev": "node src/server.js",
+    "build": "echo \"TODO: app build\" && exit 0",
+    "start": "node src/server.js"
+  },
+  "dependencies": {}
+}

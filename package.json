@@ -1,0 +1,18 @@
+{
+  "name": "nereo-os",
+  "private": true,
+  "version": "0.0.1",
+  "description": "nereo OS — Intelligenz- und Bedienschicht über SharePoint-Projektdaten",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "echo \"TODO: dev-orchestrierung (z. B. turbo/concurrently)\" && exit 0",
+    "build": "echo \"TODO: build\" && exit 0",
+    "lint": "echo \"TODO: lint\" && exit 0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
