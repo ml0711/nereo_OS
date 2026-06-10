@@ -1,0 +1,12 @@
+{
+  "name": "@nereoos/graph-client",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Microsoft-Graph-Wrapper (SharePoint + Outlook, read-only) — App-only (client credentials)",
+  "main": "src/index.js",
+  "scripts": {
+    "test:connection": "node src/test-connection.js"
+  },
+  "dependencies": {}
+}

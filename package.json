@@ -10,7 +10,9 @@
   "scripts": {
     "dev": "echo \"TODO: dev-orchestrierung (z. B. turbo/concurrently)\" && exit 0",
     "build": "echo \"TODO: build\" && exit 0",
-    "lint": "echo \"TODO: lint\" && exit 0"
+    "lint": "echo \"TODO: lint\" && exit 0",
+    "graph:test": "node packages/graph-client/src/test-connection.js",
+    "graph:crawl": "node packages/graph-client/src/crawl.js"
   },
   "engines": {
     "node": ">=22"
