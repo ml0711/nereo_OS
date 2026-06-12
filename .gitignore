@@ -27,3 +27,6 @@ logs/
 # docker / local data
 **/pgdata/
 **/.volumes/
+
+# abgeleitete Graph-Indizes (enthalten echte Ordner-/Dateinamen — nie committen)
+.data/
