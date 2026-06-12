@@ -57,6 +57,16 @@ app.use(cookieSession({
 app.get("/healthz", (_req, res) =>
   res.json({ service: "nereo-os-landing", status: "ok", configured: CONFIGURED }));
 
+// nereo-Wortmarke als SVG (u.a. fuer das LogTo-Sign-in-Logo)
+app.get("/logo.svg", (_req, res) => {
+  res.set("content-type", "image/svg+xml; charset=utf-8");
+  res.set("cache-control", "public, max-age=3600");
+  res.send(`<svg xmlns="http://www.w3.org/2000/svg" width="184" height="44" viewBox="0 0 184 44">` +
+    `<text x="2" y="32" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif" ` +
+    `font-size="30" font-weight="700" letter-spacing="-0.02em" fill="#e7e9ee">nereo` +
+    `<tspan fill="#5b8cff">·</tspan>OS</text></svg>`);
+});
+
 app.get("/login", (req, res) => {
   if (!CONFIGURED) return res.status(503).send(page(
     `<p class="muted">Login</p><p class="warn">LogTo-Anbindung noch nicht konfiguriert (LOGTO_APP_ID/SECRET fehlen).</p>`));
