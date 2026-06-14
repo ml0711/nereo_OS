@@ -71,6 +71,7 @@ async function main() {
     }
   }
 
+  index.generatedAtMs = Date.now();
   const secs = Number(process.hrtime.bigint() - t0) / 1e9;
   index.summary = { ...grand };
   delete index.summary.apiDrives;
