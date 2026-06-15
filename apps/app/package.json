@@ -11,6 +11,8 @@
     "analyze": "node src/run-analysis.js"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.70.0"
+    "@anthropic-ai/sdk": "^0.70.0",
+    "cookie-session": "^2.1.0",
+    "express": "^4.21.2"
   }
 }

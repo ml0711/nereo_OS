@@ -129,18 +129,14 @@ app.get("/logout", (req, res) => {
   res.redirect(u.toString());
 });
 
-app.get("/", (req, res) => {
+// Schlanker Einstieg: Auth + Dashboard leben in der App (app.nereo-os.de).
+// "Anmelden" führt direkt dorthin; die App gated sich selbst und landet nach Login im Dashboard.
+app.get("/", (_req, res) => {
   res.set("content-type", "text/html; charset=utf-8");
-  const user = req.session?.user;
-  if (user) {
-    return res.send(page(
-      `<p class="muted">Eingeloggt als</p><h2>${esc(user.email || user.name || user.sub)}</h2>
-       <a class="btn" href="${esc(APP_URL)}">Zur App →</a>
-       <a class="link" href="/logout">Abmelden</a>`));
-  }
   res.send(page(
-    `<p class="muted">Zugang nur für berechtigte Nutzer</p>
-     <a class="btn" href="/login">Anmelden</a>${CONFIGURED ? "" : `<p class="warn">Hinweis: LogTo-Client noch nicht hinterlegt.</p>`}`));
+    `<p class="muted">Intelligenz- und Bedienschicht über euren Projektdaten</p>
+     <a class="btn" href="${esc(APP_URL)}">Anmelden</a>
+     <p class="muted" style="margin-top:18px;font-size:12.5px">Zugang nur für berechtigte Nutzer</p>`));
 });
 
 app.listen(PORT, () => console.log(`nereo OS landing on :${PORT} (configured=${CONFIGURED})`));
