@@ -8,5 +8,7 @@
   "scripts": {
     "test:connection": "node src/test-connection.js"
   },
-  "dependencies": {}
+  "dependencies": {
+    "pg": "^8.13.1"
+  }
 }
