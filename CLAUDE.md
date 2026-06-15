@@ -30,7 +30,7 @@ Wichtig — diese drei Speicher haben **nichts** miteinander zu tun:
 | Speicher | Inhalt | Rolle |
 |---|---|---|
 | **SharePoint / M365** | Original-Kundendokumente | **Single Source of Truth.** nereo OS liest nur (read-only). |
-| **Supabase** (cloud Postgres) | Analyse-Ergebnisse + aus SharePoint abgeleitete/zwischengespeicherte Daten (Index, Metadaten, Agenten-Output) | **Zwischenspeicher / App-Daten.** Enthält **keine** Original-Dokumente, nur Abgeleitetes. |
+| **App-Postgres** (self-hosted, Coolify, DB `nereo_app`) | Analyse-Ergebnisse + aus SharePoint abgeleitete/zwischengespeicherte Daten (Index, Metadaten, Agenten-Output) | **Zwischenspeicher / App-Daten.** Enthält **keine** Original-Dokumente, nur Abgeleitetes. *(Entscheidung 2026-06: self-hosted auf dem VPS statt Supabase — Daten bleiben auf dem VPS; getrennte DB von LogTo.)* |
 | **LogTo-Postgres** (self-hosted, Coolify) | Identität, Logins, Sessions | **Nur Auth.** Hat mit den SharePoint-Daten **null** zu tun und sieht keine Projekt-/Analyse-Daten. |
 
 ### Go-Live-Constraints (institutionelle Investoren — später scharf zu schalten)
@@ -68,9 +68,9 @@ Definierte, eng umrissene Tasks — kein „KI auf alles":
 
 Output: strukturiert, mit **Quellenbezug**; Entscheidungs-Unterstützung mit Mensch im Loop.
 
-### App-State / Analyse-Ergebnisse → Supabase (entschieden)
-Die App schreibt ihre eigenen Daten — Analyse-Ergebnisse, Dokument-Index, Status, abgeleitete Metadaten aus SharePoint — in **Supabase** (cloud, Postgres). Dient als **Zwischenspeicher** für alles, was aus SharePoint analysiert wird.
-**Enthält keine Original-Dokumente** (die bleiben in SharePoint) und **ist getrennt von der LogTo-DB** (siehe §2).
+### App-State / Analyse-Ergebnisse → App-Postgres (self-hosted, Coolify)
+Die App schreibt ihre eigenen Daten — Analyse-Ergebnisse, Dokument-Index, Status, abgeleitete Metadaten aus SharePoint — in eine **dedizierte Postgres auf dem VPS** (Coolify, DB `nereo_app`). Dient als **Zwischenspeicher** für alles, was aus SharePoint analysiert wird.
+**Enthält keine Original-Dokumente** (die bleiben in SharePoint) und **ist getrennt von der LogTo-DB** (siehe §2). *(Entscheidung 2026-06: self-hosted statt Supabase — Daten bleiben auf dem VPS, passt zur CH/EU-Datenresidenz.)*
 
 ---
 
@@ -100,4 +100,4 @@ CLAUDE.md
 1. **Wer registriert sich?** v1 = 3 Founder. Self-Service vs. invite-only. Externe Kunden-Logins später + strenger.
 2. **Graph-Berechtigung:** `Sites.Selected` (nur freigegebene Sites) statt tenant-weitem `Sites.Read.All`.
 3. **Outlook-Scope:** rein lesend — oder Mail-Versand fürs Nachhaken (= Schreibrecht)?
-4. **Datenresidenz CH/EU** vor institutionellem Go-Live (zurückgestellt, siehe §2). Supabase: EU-Region wählen.
+4. **Datenresidenz CH/EU** vor institutionellem Go-Live (zurückgestellt, siehe §2). App-DB ist bereits self-hosted auf dem VPS; vor Go-Live VPS-Standort + KI-Inferenz CH/EU prüfen.
