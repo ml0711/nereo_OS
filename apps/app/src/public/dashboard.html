@@ -16,7 +16,6 @@
   body{background:var(--bg);color:var(--txt);
     font:15px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
   a{color:inherit}
-  /* ---- Top bar ---- */
   .topbar{position:fixed;top:0;left:0;right:0;height:58px;z-index:20;
     display:flex;align-items:center;gap:14px;padding:0 20px;
     background:rgba(11,13,16,.85);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
@@ -31,10 +30,9 @@
     border:1px solid var(--line);background:var(--panel2);color:var(--txt);
     padding:7px 13px;border-radius:9px;font-size:13.5px;font-weight:500}
   .btn:hover{border-color:var(--acc)}
-  .btn.primary{background:var(--acc);border-color:var(--acc);color:#fff}
-  .btn.primary:hover{background:#225aff}
+  .btn[disabled]{opacity:.55;cursor:default}
   .btn.ghost{background:transparent}
-  /* ---- Shell ---- */
+  .btn.sm{padding:5px 11px;font-size:12.5px;border-radius:8px}
   .shell{display:flex;min-height:100vh;padding-top:58px}
   .side{position:fixed;top:58px;bottom:0;left:0;width:var(--sb);padding:18px 14px;
     border-right:1px solid var(--line);background:var(--bg2);overflow:auto}
@@ -50,13 +48,10 @@
   h2.page{margin:0 0 4px;font-size:22px;letter-spacing:-.01em}
   .page-sub{color:var(--mut);font-size:13.5px;margin-bottom:22px}
   .row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
-  /* ---- KPIs ---- */
   .kpis{display:grid;grid-template-columns:repeat(auto-fill,minmax(168px,1fr));gap:13px;margin-bottom:24px}
   .kpi{background:var(--panel);border:1px solid var(--line);border-radius:13px;padding:16px 18px}
   .kpi .n{font-size:27px;font-weight:700;letter-spacing:-.02em}
   .kpi .l{color:var(--mut);font-size:12px;text-transform:uppercase;letter-spacing:.5px;margin-top:3px}
-  .kpi .l b{color:var(--acc2)}
-  /* status dist */
   .dist{background:var(--panel);border:1px solid var(--line);border-radius:13px;padding:18px 20px;margin-bottom:18px}
   .dist h3{margin:0 0 14px;font-size:15px}
   .distbar{display:flex;height:14px;border-radius:7px;overflow:hidden;background:var(--panel2)}
@@ -64,7 +59,6 @@
   .legend{display:flex;gap:18px;flex-wrap:wrap;margin-top:13px;font-size:13px;color:var(--mut)}
   .legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:7px;vertical-align:middle}
   .legend b{color:var(--txt)}
-  /* ---- toolbar ---- */
   .toolbar{display:flex;gap:10px;align-items:center;margin-bottom:16px;flex-wrap:wrap}
   .chips{display:flex;gap:7px;flex-wrap:wrap}
   .chip{background:var(--panel2);border:1px solid var(--line);color:var(--mut);
@@ -73,7 +67,10 @@
   input.search{background:var(--panel);border:1px solid var(--line);color:var(--txt);
     padding:8px 13px;border-radius:9px;font-size:13.5px;min-width:200px;outline:none}
   input.search:focus{border-color:var(--acc)}
-  /* ---- cards ---- */
+  .proj-group{margin-bottom:26px}
+  .proj-head{display:flex;align-items:center;gap:12px;margin:4px 0 11px}
+  .proj-title{margin:0;font-size:15.5px;font-weight:600;color:var(--txt)}
+  .proj-title .note{font-weight:400}
   .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px 20px;margin-bottom:13px}
   .card .head{display:flex;align-items:center;gap:11px;flex-wrap:wrap}
   .card h3{margin:0;font-size:16.5px;font-weight:600}
@@ -98,7 +95,6 @@
   .dot.y{background:var(--ok)} .dot.n{background:var(--bad)}
   .toggle{color:var(--acc2);font-size:12.5px;cursor:pointer;margin-top:11px;display:inline-block}
   .hidden{display:none}
-  /* ---- analysis ---- */
   .ai{margin-top:14px;border-top:1px solid var(--line);padding-top:14px}
   .ai .ai-head{display:flex;align-items:center;gap:11px;flex-wrap:wrap}
   .ai .tag{font-size:11px;font-weight:700;letter-spacing:.4px;color:var(--acc2);
@@ -114,18 +110,13 @@
   .ai .sum{font-size:13.5px;color:var(--txt);margin-top:11px;line-height:1.6}
   .ai .none{color:var(--mut)}
   .noai{margin-top:13px;border-top:1px dashed var(--line);padding-top:12px;color:var(--mut2);font-size:13px}
-  /* ---- misc ---- */
   .state{padding:46px 20px;text-align:center;color:var(--mut)}
   .state.err{color:var(--bad)}
   .note{font-size:12.5px;color:var(--mut2)}
   .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);z-index:50;
     background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:11px 16px;
-    font-size:13.5px;box-shadow:0 8px 30px rgba(0,0,0,.4);display:none}
-  @media(max-width:820px){
-    :root{--sb:0px}
-    .side{display:none}
-    .main{margin-left:0;padding:20px 16px}
-  }
+    font-size:13.5px;box-shadow:0 8px 30px rgba(0,0,0,.4);display:none;max-width:90vw}
+  @media(max-width:820px){:root{--sb:0px} .side{display:none} .main{margin-left:0;padding:20px 16px}}
 </style>
 </head>
 <body>
@@ -142,27 +133,23 @@
       <a data-sec="overview" class="active"><span class="ico">◧</span> Übersicht</a>
       <a data-sec="datarooms"><span class="ico">▤</span> Datenräume</a>
       <div class="sec">Quellen</div>
-      <a href="#" class="note" style="padding:8px 12px;color:var(--mut2);cursor:default">SharePoint / M365 · read-only</a>
+      <span class="note" style="padding:8px 12px;color:var(--mut2)">SharePoint / M365 · read-only</span>
     </nav>
   </aside>
 
   <main class="main">
-    <!-- ÜBERSICHT -->
     <section id="overview">
       <h2 class="page">Übersicht</h2>
-      <div class="page-sub" id="ov-sub">Portfolio der Datenräume — abgeleitete Metadaten aus Microsoft Graph.</div>
+      <div class="page-sub">Portfolio der Datenräume — abgeleitete Metadaten aus Microsoft Graph.</div>
       <div class="kpis" id="kpis"></div>
       <div class="dist" id="dist"></div>
-      <div class="row">
-        <button class="btn primary" id="analyzeBtn">✦ KI-Analyse aktualisieren</button>
-        <span class="note" id="ov-meta"></span>
-      </div>
+      <div class="row"><span class="note" id="ov-meta"></span></div>
+      <p class="note" style="margin-top:8px">KI-Analysen startest du <b style="color:var(--txt)">gezielt</b> pro Datenraum oder Projekt unter <b style="color:var(--txt)">Datenräume</b> — bewusst nicht alles auf einmal (Token-schonend).</p>
     </section>
 
-    <!-- DATENRÄUME -->
     <section id="datarooms" class="hidden">
       <h2 class="page">Datenräume</h2>
-      <div class="page-sub">Vollständigkeit gegen das Standard-Schema 00–16 + KI-Bewertung (Lücken, Risiken).</div>
+      <div class="page-sub">Vollständigkeit gegen Schema 00–16. KI-Bewertung pro Raum/Projekt auf Knopfdruck.</div>
       <div class="toolbar">
         <div class="chips" id="chips"></div>
         <div class="spacer"></div>
@@ -183,15 +170,13 @@ const esc=(s="")=>String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"
 const STATUS_COLOR={Aktiv:"#39c07a",Pipeline:"#2f6bff",Vorlage:"#e6a23c",Dropped:"#e15b5b"};
 let DATA=null, filter="Alle", query="";
 
-function toast(msg){const t=$("#toast");t.textContent=msg;t.style.display="block";clearTimeout(t._h);t._h=setTimeout(()=>t.style.display="none",4000);}
+function toast(msg){const t=$("#toast");t.textContent=msg;t.style.display="block";clearTimeout(t._h);t._h=setTimeout(()=>t.style.display="none",4500);}
 
-// --- user ---
 fetch("/api/me").then(r=>r.ok?r.json():null).then(d=>{
   const u=d&&d.user; const name=(u&&(u.name||u.username||u.email||u.sub))||"—";
   $("#who").textContent=name; $("#avatar").textContent=(name[0]||"·").toUpperCase();
 }).catch(()=>{});
 
-// --- nav ---
 document.querySelectorAll(".nav a[data-sec]").forEach(a=>a.onclick=(e)=>{
   e.preventDefault();
   document.querySelectorAll(".nav a[data-sec]").forEach(x=>x.classList.remove("active"));
@@ -200,9 +185,8 @@ document.querySelectorAll(".nav a[data-sec]").forEach(a=>a.onclick=(e)=>{
   $("#datarooms").classList.toggle("hidden",a.dataset.sec!=="datarooms");
 });
 
-// --- data ---
 function load(){
-  fetch("/api/datarooms").then(r=>{
+  return fetch("/api/datarooms").then(r=>{
     if(r.status===401){location.href="/login";return null;}
     return r.json();
   }).then(d=>{
@@ -215,36 +199,29 @@ function load(){
 function renderOverview(){
   const s=DATA.summary;
   $("#kpis").innerHTML=[
-    ["Datenräume",s.total],
-    ["Aktiv",s.byStatus.Aktiv||0],
-    ["Pipeline",s.byStatus.Pipeline||0],
-    ["Dateien",s.files.toLocaleString("de-DE")],
-    ["Volumen",fmtGB(s.bytes)],
+    ["Datenräume",s.total],["Aktiv",s.byStatus.Aktiv||0],["Pipeline",s.byStatus.Pipeline||0],
+    ["Dateien",s.files.toLocaleString("de-DE")],["Volumen",fmtGB(s.bytes)],
     ["Ø Vollständigkeit",s.avgCompleteness!=null?s.avgCompleteness+" %":"—"],
     ["KI-analysiert",`${DATA.analyzed||0} / ${s.total}`],
   ].map(([l,n])=>`<div class="kpi"><div class="n">${n}</div><div class="l">${l}</div></div>`).join("");
-
-  const order=["Aktiv","Pipeline","Vorlage","Dropped"];
-  const total=s.total||1;
+  const order=["Aktiv","Pipeline","Vorlage","Dropped"], total=s.total||1;
   const segs=order.filter(k=>s.byStatus[k]).map(k=>`<div style="width:${(s.byStatus[k]/total*100).toFixed(1)}%;background:${STATUS_COLOR[k]}"></div>`).join("");
   const leg=order.filter(k=>s.byStatus[k]).map(k=>`<span><i style="background:${STATUS_COLOR[k]}"></i>${k} <b>${s.byStatus[k]}</b></span>`).join("");
   $("#dist").innerHTML=`<h3>Verteilung nach Status</h3><div class="distbar">${segs}</div><div class="legend">${leg}</div>`;
-
   const gen=DATA.generatedAt?new Date(DATA.generatedAt).toLocaleString("de-DE"):"unbekannt";
   $("#ov-meta").textContent=`Quelle: ${DATA.source==="postgres"?"App-Postgres":"Datei"} · Index-Stand: ${gen}`;
 }
 
 function aiHtml(a){
-  if(!a) return `<div class="noai">Noch nicht KI-analysiert. <span class="toggle" onclick="runAnalysis()">Jetzt analysieren ✦</span></div>`;
-  const scoreColor=a.completeness_score>=75?"var(--ok)":a.completeness_score>=50?"var(--warn)":"var(--bad)";
+  if(!a) return `<div class="noai">Noch nicht KI-analysiert — über „✦ Analysieren" (oben rechts) starten.</div>`;
+  const sc=a.completeness_score>=75?"var(--ok)":a.completeness_score>=50?"var(--warn)":"var(--bad)";
   const gaps=(a.critical_gaps||[]).map(g=>`<li><span class="sev ${esc(g.importance)}">${esc(g.importance)}</span><span><b>${esc(g.category)}</b> — ${esc(g.note)}</span></li>`).join("");
   const risks=(a.risks||[]).map(r=>`<li><span class="sev ${esc(r.severity)}">${esc(r.severity)}</span><span><b>${esc(r.title)}</b> — ${esc(r.detail)}</span></li>`).join("");
   const inc=(a.inconsistencies||[]).map(i=>`<li><span class="sev mittel">!</span><span>${esc(i)}</span></li>`).join("");
   return `<div class="ai">
     <div class="ai-head"><span class="tag">KI-ANALYSE</span>
-      <span>Score <span class="score" style="color:${scoreColor}">${a.completeness_score}</span>/100</span>
-      <span class="note" style="margin-left:auto">${esc(a.model||"")}</span>
-    </div>
+      <span>Score <span class="score" style="color:${sc}">${a.completeness_score}</span>/100</span>
+      <span class="note" style="margin-left:auto">${esc(a.model||"")}</span></div>
     <div class="sum">${esc(a.summary||"")}</div>
     ${gaps?`<h4>Kritische Lücken (${a.critical_gaps.length})</h4><ul>${gaps}</ul>`:`<h4>Lücken</h4><div class="none note">keine kritischen Lücken erkannt</div>`}
     ${risks?`<h4>Risiken (${a.risks.length})</h4><ul>${risks}</ul>`:""}
@@ -260,7 +237,8 @@ function cardHtml(r){
     <div class="head">
       <h3>${esc(r.name)}</h3>
       <span class="badge b-${r.status}">${r.status}</span>
-      <span class="proj">· ${esc(r.project)} · ${esc(r.owner)}</span>
+      <span class="proj">· ${esc(r.owner)}</span>
+      <button class="btn ghost sm" data-action="room" data-path="${esc(r.path)}" style="margin-left:auto">${r.analysis?'↻ Neu analysieren':'✦ Analysieren'}</button>
     </div>
     <div class="meta">
       <span><b>${r.files}</b> Dateien</span><span><b>${r.folders}</b> Ordner</span>
@@ -271,8 +249,7 @@ function cardHtml(r){
       <div class="compl" style="margin-top:13px">
         <span class="lbl">Schema 00–16: <b style="color:var(--txt)">${r.schema.matched}/${r.schema.total}</b></span>
         <div class="bar" style="flex:1"><div style="width:${pct}%"></div></div>
-        <span class="lbl">${pct}%</span>
-      </div>
+        <span class="lbl">${pct}%</span></div>
       <span class="toggle" onclick="this.nextElementSibling.classList.toggle('hidden')">Kategorien ▾</span>
       <div class="cats hidden">${cats}</div>`
     :`<div class="meta" style="margin-top:8px"><span style="color:var(--warn)">⚠ Kein Standard-Schema (00–16) erkannt</span></div>`}
@@ -286,21 +263,45 @@ function renderRooms(){
   $("#chips").innerHTML=statuses.map(st=>`<span class="chip ${st===filter?'active':''}" onclick="setFilter('${st}')">${st}${st!=="Alle"?` (${s.byStatus[st]})`:""}</span>`).join("");
   let rooms=filter==="Alle"?DATA.rooms:DATA.rooms.filter(r=>r.status===filter);
   if(query){const q=query.toLowerCase();rooms=rooms.filter(r=>(r.name+r.project+r.owner).toLowerCase().includes(q));}
-  $("#list").innerHTML=rooms.map(cardHtml).join("")||`<div class="state">Keine Datenräume in dieser Ansicht.</div>`;
+  if(!rooms.length){$("#list").innerHTML=`<div class="state">Keine Datenräume in dieser Ansicht.</div>`;return;}
+  // nach Projekt gruppieren
+  const groups={};
+  for(const r of rooms){(groups[r.project]??=[]).push(r);}
+  $("#list").innerHTML=Object.keys(groups).map(p=>{
+    const rs=groups[p];
+    return `<div class="proj-group">
+      <div class="proj-head">
+        <h3 class="proj-title">${esc(p)} <span class="note">· ${rs.length} ${rs.length===1?'Datenraum':'Datenräume'}</span></h3>
+        <button class="btn ghost sm" data-action="project" data-project="${esc(p)}" style="margin-left:auto">✦ Projekt analysieren</button>
+      </div>
+      ${rs.map(cardHtml).join("")}
+    </div>`;
+  }).join("");
 }
 window.setFilter=(f)=>{filter=f;renderRooms();};
 $("#search").oninput=(e)=>{query=e.target.value;renderRooms();};
 
-// --- analyze action ---
-window.runAnalysis=()=>$("#analyzeBtn").click();
-$("#analyzeBtn").onclick=function(){
-  const btn=this; btn.disabled=true; btn.textContent="Analysiere …";
-  fetch("/api/datarooms/analyze",{method:"POST"}).then(r=>r.json()).then(d=>{
+// --- gezielte KI-Aktion (ein Raum oder ein Projekt) ---
+$("#list").addEventListener("click",(e)=>{
+  const b=e.target.closest("button[data-action]");
+  if(!b)return;
+  if(b.dataset.action==="room") analyzeScope({path:b.dataset.path},b,"room");
+  else if(b.dataset.action==="project") analyzeScope({project:b.dataset.project},b,"project");
+});
+async function analyzeScope(params,btn,kind){
+  const old=btn.textContent; btn.disabled=true; btn.textContent="Analysiere …";
+  try{
+    const qs=new URLSearchParams(params).toString();
+    const d=await(await fetch("/api/datarooms/analyze?"+qs,{method:"POST"})).json();
     if(d.error){toast("Fehler: "+d.error);}
-    else if(d.failed&&!d.analyzed){toast(`Kein API-Key gesetzt — ${d.failed} Räume nicht analysiert.`);}
-    else{toast(`Fertig: ${d.analyzed} analysiert, ${d.skipped} aktuell, ${d.failed} Fehler.`);load();}
-  }).catch(e=>toast(e.message)).finally(()=>{btn.disabled=false;btn.textContent="✦ KI-Analyse aktualisieren";});
-};
+    else if((d.failed||0)>0 && (d.analyzed||0)===0){toast(d.error||"Kein API-Key gesetzt — Analyse nicht möglich.");}
+    else{
+      toast(kind==="room"?`Analysiert: ${d.room||""} · Score ${d.score}`:`Projekt „${d.project}": ${d.analyzed} analysiert, ${d.skipped||0} aktuell, ${d.failed||0} Fehler.`);
+      await load();
+    }
+  }catch(e){toast(e.message);}
+  finally{btn.disabled=false;btn.textContent=old;}
+}
 
 load();
 </script>

@@ -147,12 +147,20 @@ app.get("/api/datarooms", requireAuth, async (req, res) => {
   });
 });
 
-// KI-Analyse triggern: Secret (curl/cron) ODER eingeloggt (Dashboard-Button). Idempotent.
+// KI-Analyse on-demand, GEZIELT (Token-Schutz — kein "alles auf einmal" aus der UI):
+//   ?path=<datenraum>   -> genau dieser Datenraum   (eingeloggt ODER Secret)
+//   ?project=<projekt>  -> alle Räume des Projekts   (eingeloggt ODER Secret)
+//   (ohne Filter)       -> Bulk ALLE — NUR per Secret (curl/cron), nicht aus der Session
 async function analyzeHandler(req, res) {
-  const ok = (ANALYZE_TRIGGER_SECRET && req.query.key === ANALYZE_TRIGGER_SECRET) || (req.session && req.session.user);
-  if (!ok) return res.status(403).json({ error: "forbidden" });
-  const { analyzeMissing } = await import("./analyze.js");
-  res.json(await analyzeMissing({ force: req.query.force === "1" }));
+  const bySecret = ANALYZE_TRIGGER_SECRET && req.query.key === ANALYZE_TRIGGER_SECRET;
+  const bySession = req.session && req.session.user;
+  if (!bySecret && !bySession) return res.status(403).json({ error: "forbidden" });
+  const { analyzeOne, analyzeProject, analyzeMissing } = await import("./analyze.js");
+  const force = req.query.force === "1";
+  if (req.query.path) return res.json(await analyzeOne(String(req.query.path)));
+  if (req.query.project) return res.json(await analyzeProject(String(req.query.project), { force }));
+  if (!bySecret) return res.status(400).json({ error: "Bulk-Analyse nur per Secret. Nutze ?path= oder ?project= (Token-Schutz)." });
+  return res.json(await analyzeMissing({ force }));
 }
 app.get("/api/datarooms/analyze", analyzeHandler);
 app.post("/api/datarooms/analyze", analyzeHandler);
