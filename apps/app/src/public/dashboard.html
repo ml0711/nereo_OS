@@ -238,7 +238,8 @@ function cardHtml(r){
       <h3>${esc(r.name)}</h3>
       <span class="badge b-${r.status}">${r.status}</span>
       <span class="proj">· ${esc(r.owner)}</span>
-      <button class="btn ghost sm" data-action="room" data-path="${esc(r.path)}" style="margin-left:auto">${r.analysis?'↻ Neu analysieren':'✦ Analysieren'}</button>
+      ${r.webUrl?`<a class="btn ghost sm" href="${esc(r.webUrl)}" target="_blank" rel="noopener noreferrer" title="Datenraum in SharePoint öffnen" style="margin-left:auto">↗ In SharePoint</a>`:''}
+      <button class="btn ghost sm" data-action="room" data-path="${esc(r.path)}"${r.webUrl?'':' style="margin-left:auto"'}>${r.analysis?'↻ Neu analysieren':'✦ Analysieren'}</button>
     </div>
     <div class="meta">
       <span><b>${r.files}</b> Dateien</span><span><b>${r.folders}</b> Ordner</span>

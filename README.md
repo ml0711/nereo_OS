@@ -16,7 +16,7 @@ SharePoint bleibt Single Source of Truth — nereo OS liest (read-only), zeigt S
 
 ## Datenwelten (strikt getrennt)
 - **SharePoint / M365** — Original-Dokumente (SSOT), read-only.
-- **Supabase** (cloud Postgres) — Analyse-Ergebnisse & abgeleitete Daten. Keine Original-Dokumente.
+- **App-Postgres** (self-hosted, Coolify, DB `nereo_app`) — Analyse-Ergebnisse, Index & abgeleitete Daten. Keine Original-Dokumente.
 - **LogTo-Postgres** (self-hosted) — nur Auth. Hat mit den SharePoint-Daten nichts zu tun.
 
 ## Deployment

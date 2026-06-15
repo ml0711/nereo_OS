@@ -1,6 +1,8 @@
-// @nereoos/graph-client — Microsoft-Graph-Wrapper (read-only: SharePoint + OneDrive + Outlook).
+// @nereoos/graph-client — Microsoft-Graph-Wrapper (SharePoint + OneDrive + Outlook).
 // App-only (client credentials). Dependency-frei (Node >=22 global fetch).
-// nereo OS liest nur (read-only), editiert nichts. Siehe ../../CLAUDE.md §2/§3.
+// LESEN: jederzeit. SCHREIBEN: nur mit Azure-Consent Sites.ReadWrite.All / Mail.Send
+//   und über mutate() — das immer durch die Guardrails läuft (dryRun + Audit-Callback).
+// Siehe ../../CLAUDE.md §2/§3 (Schreibmacht mit Mensch-im-Loop + Audit).
 
 const AUTHORITY = "https://login.microsoftonline.com";
 const GRAPH = "https://graph.microsoft.com/v1.0";
@@ -64,10 +66,38 @@ export function tokenRoles(accessToken) {
   }
 }
 
-/** Erzeugt einen Graph-Client mit Token-Caching, Paginierung und Drive-Helfern. */
-export function createGraphClient(cfg) {
+/**
+ * Erzeugt einen Graph-Client mit Token-Caching, Paginierung, Drive-Helfern
+ * und (optional abgesichertem) Schreibzugriff.
+ *
+ * @param {object} cfg  Graph-Credentials (graphConfigFromEnv()).
+ * @param {object} [opts]
+ * @param {boolean} [opts.dryRun=false]  Wenn true, wird KEINE Mutation ausgeführt —
+ *        mutate() gibt nur die geplante Operation zurück und meldet sie als "dry-run"
+ *        an onWrite. Das ist das Mensch-im-Loop-Preview (Guardrail, CLAUDE.md §2).
+ * @param {boolean} [opts.writeEnabled]  Ops-Kill-Switch (Guardrail 1, CLAUDE.md §2).
+ *        Default = (process.env.GRAPH_WRITE_ENABLED === "1"). Ist er false, führt mutate()
+ *        AUCH bei confirm/!dryRun KEINEN Netzwerk-Write aus — der Versuch wird als
+ *        "blocked" auditiert. So kann es keinen Write am Kill-Switch vorbei geben,
+ *        selbst wenn ein Aufrufer den App-Endpoint (requireWrite) umgeht.
+ * @param {(op: object) => any} [opts.onWrite]  Audit-Callback. Wird bei JEDER Mutation
+ *        aufgerufen (dry-run | blocked | ok | error). Der Aufrufer persistiert das z. B.
+ *        nach App-Postgres. Fehler im Callback dürfen den Write nicht blockieren.
+ */
+export function createGraphClient(cfg, opts = {}) {
+  const {
+    dryRun = false,
+    onWrite,
+    writeEnabled = process.env.GRAPH_WRITE_ENABLED === "1",
+  } = opts;
   let token = null;
   let expiresAt = 0;
+
+  // Audit-Emit darf NIE den eigentlichen Write blockieren oder werfen.
+  async function audit(op) {
+    if (!onWrite) return;
+    try { await onWrite(op); } catch (e) { console.error("[graph-client] Audit fehlgeschlagen:", e?.message); }
+  }
 
   async function authHeader() {
     const now = Date.now();
@@ -109,11 +139,56 @@ export function createGraphClient(cfg) {
     return out;
   }
 
+  // Schreibender Graph-Aufruf (POST/PUT/PATCH/DELETE). EINZIGER Schreibpfad —
+  // läuft immer durch Guardrails: dryRun stoppt vor dem Netzwerk, audit() protokolliert.
+  // body: JSON-Objekt (-> application/json) ODER Buffer/Uint8Array (-> contentType).
+  async function mutate(method, path, { json, body, contentType, label } = {}) {
+    const op = { method, path, label: label ?? path };
+    if (dryRun) {
+      await audit({ ...op, status: "dry-run" });
+      return { dryRun: true, ...op };
+    }
+    // Kill-Switch-Backstop: confirm/!dryRun reicht NICHT — ohne GRAPH_WRITE_ENABLED=1
+    // wird nichts ans Netz geschickt. Letzte Verteidigungslinie am einzigen Write-Pfad.
+    if (!writeEnabled) {
+      await audit({ ...op, status: "blocked" });
+      return { blocked: true, reason: "GRAPH_WRITE_ENABLED!=1", ...op };
+    }
+    const headers = { authorization: await authHeader(), accept: "application/json" };
+    let payload;
+    if (json !== undefined) {
+      headers["content-type"] = "application/json";
+      payload = JSON.stringify(json);
+    } else if (body !== undefined) {
+      headers["content-type"] = contentType ?? "application/octet-stream";
+      payload = body;
+    }
+    const url = path.startsWith("http") ? path : `${GRAPH}${path}`;
+    const res = await fetch(url, { method, headers, body: payload });
+    if (!res.ok) {
+      const text = await res.text();
+      let j = null;
+      try { j = JSON.parse(text); } catch {}
+      const err = new Error(`Graph ${method} ${path.replace(GRAPH, "")} → HTTP ${res.status}`);
+      err.status = res.status;
+      err.body = j?.error ?? text.slice(0, 400);
+      await audit({ ...op, status: "error", httpStatus: res.status, error: err.body });
+      throw err;
+    }
+    // 204 No Content (z. B. DELETE / sendMail) hat keinen Body.
+    const out = res.status === 204 ? { ok: true } : await res.json().catch(() => ({ ok: true }));
+    await audit({ ...op, status: "ok", httpStatus: res.status, resultId: out?.id });
+    return out;
+  }
+
   return {
     authHeader,
     tokenRoles: async () => tokenRoles((await authHeader()).slice(7)),
     get: request,
     getAll,
+    mutate,
+    dryRun,
+    writeEnabled,
 
     // --- Verzeichnis / User ---
     listUsers: (select = "id,displayName,userPrincipalName,mail,accountEnabled") =>
@@ -137,7 +212,7 @@ export function createGraphClient(cfg) {
       const visit = async (id, depth) => {
         const kids = await getAll(
           `/drives/${driveId}/${id ? `items/${id}` : "root"}/children` +
-            `?$select=id,name,size,folder,file,lastModifiedDateTime&$top=200`
+            `?$select=id,name,size,folder,file,webUrl,lastModifiedDateTime&$top=200`
         );
         const nodes = [];
         for (const k of kids) {
@@ -147,6 +222,8 @@ export function createGraphClient(cfg) {
             type: k.folder ? "folder" : "file",
             size: k.size ?? 0,
             modified: k.lastModifiedDateTime,
+            // webUrl nur für Ordner speichern (Quellen-Link zum Datenraum); hält den Index schlank.
+            ...(k.folder ? { webUrl: k.webUrl } : {}),
           };
           if (k.folder && k.folder.childCount > 0 && depth < maxDepth) {
             node.children = await visit(k.id, depth + 1);
@@ -168,5 +245,58 @@ export function createGraphClient(cfg) {
     // --- Suche ---
     searchDrive: (driveId, q) =>
       getAll(`/drives/${driveId}/root/search(q='${encodeURIComponent(q)}')?$top=200`),
+
+    // ===================================================================
+    // SCHREIBEN (Guardrails über mutate(): dryRun + Audit). Braucht in Azure
+    // Application-Permission Sites.ReadWrite.All bzw. Mail.Send + Admin-Consent.
+    // ===================================================================
+
+    // --- Dateien ---
+    /** Lädt eine neue Datei in einen Ordner hoch (Simple Upload, bis ~4 MB).
+     *  Größere Dateien bräuchten eine Upload-Session (createUploadSession) — TODO. */
+    uploadFile: (driveId, parentItemId, name, content, contentType) =>
+      mutate(
+        "PUT",
+        `/drives/${driveId}/items/${parentItemId}:/${encodeURIComponent(name)}:/content`,
+        { body: content, contentType, label: `upload ${name}` }
+      ),
+    /** Überschreibt den Inhalt einer bestehenden Datei. */
+    replaceFile: (driveId, itemId, content, contentType) =>
+      mutate("PUT", `/drives/${driveId}/items/${itemId}/content`,
+        { body: content, contentType, label: `replace ${itemId}` }),
+    /** Löscht ein Item (Datei oder Ordner) — wandert in den SharePoint-Papierkorb. */
+    deleteItem: (driveId, itemId) =>
+      mutate("DELETE", `/drives/${driveId}/items/${itemId}`, { label: `delete ${itemId}` }),
+    /** Benennt ein Item um. */
+    renameItem: (driveId, itemId, newName) =>
+      mutate("PATCH", `/drives/${driveId}/items/${itemId}`,
+        { json: { name: newName }, label: `rename ${itemId} -> ${newName}` }),
+    /** Verschiebt ein Item in einen anderen Ordner. */
+    moveItem: (driveId, itemId, newParentItemId) =>
+      mutate("PATCH", `/drives/${driveId}/items/${itemId}`,
+        { json: { parentReference: { id: newParentItemId } }, label: `move ${itemId} -> ${newParentItemId}` }),
+
+    // --- Ordner / Struktur ---
+    /** Legt einen neuen Ordner an (conflictBehavior=fail: kein stilles Überschreiben). */
+    createFolder: (driveId, parentItemId, name) =>
+      mutate("POST", `/drives/${driveId}/items/${parentItemId}/children`,
+        { json: { name, folder: {}, "@microsoft.graph.conflictBehavior": "fail" }, label: `mkdir ${name}` }),
+
+    // --- SharePoint-Metadaten (Status-/Listen-Spalten) ---
+    /** Schreibt Spaltenwerte am Listen-Item (z. B. { Status: "von nereo geprüft", Risiko: "hoch" }). */
+    updateListItemFields: (siteId, listId, itemId, fields) =>
+      mutate("PATCH", `/sites/${siteId}/lists/${listId}/items/${itemId}/fields`,
+        { json: fields, label: `fields list-item ${itemId}` }),
+    /** Schreibt Metadaten direkt an einem Drive-Item (über dessen listItem-Beziehung). */
+    setDriveItemFields: (driveId, itemId, fields) =>
+      mutate("PATCH", `/drives/${driveId}/items/${itemId}/listItem/fields`,
+        { json: fields, label: `fields drive-item ${itemId}` }),
+
+    // --- Outlook (Mail senden, fürs Nachhaken) ---
+    /** Sendet eine Mail im Namen von fromUserId. message = Graph-Message-Objekt. */
+    sendMail: (fromUserId, message, saveToSentItems = true) =>
+      mutate("POST", `/users/${encodeURIComponent(fromUserId)}/sendMail`,
+        { json: { message, saveToSentItems },
+          label: `mail -> ${(message?.toRecipients ?? []).map((r) => r.emailAddress?.address).join(", ")}` }),
   };
 }

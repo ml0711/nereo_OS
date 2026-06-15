@@ -8,20 +8,20 @@ Diese Datei ist die verbindliche Referenz für alle, die an diesem Repo arbeiten
 ## 1. Was ist nereo OS
 
 Ein eigenständig auf einem **VPS** gehostetes Web-Tool für nereo development partners.
-Es ist die **Intelligenz- und Bedienschicht** über den bestehenden Projektdaten — **kein Dokumentenspeicher**.
+Es ist die **Intelligenz-, Bedien- UND Aktionsschicht** über den bestehenden Projektdaten — **kein zweiter Dokumentenspeicher**.
 
 - **Dokumente bleiben in Microsoft 365 / SharePoint.** Dort ist und bleibt die Single Source of Truth.
-- nereo OS **liest** diese Daten (read-only), zeigt Status, und lässt **KI-Agenten** definierte Analysen darauf laufen.
-- nereo OS **editiert keine** SharePoint-Inhalte. Es referenziert sie über **Links**.
+- nereo OS **liest** diese Daten, zeigt Status, und lässt **KI-Agenten** definierte Analysen darauf laufen.
+- nereo OS **schreibt auch gezielt zurück** in SharePoint/Outlook (Dateien, Ordner, Status-/Metadaten-Spalten, Mail) — aber **abgesichert**: Mensch-im-Loop (Dry-run-Default), lückenloses Audit-Log, Ops-Kill-Switch. **Keine** Dauerkopien — geschrieben wird in die SSoT selbst, nicht in einen Zweitspeicher.
 
-Merksatz: **SharePoint speichert. nereo OS denkt und zeigt.**
+Merksatz: **SharePoint speichert. nereo OS denkt, zeigt — und handelt (kontrolliert).**
 
 ---
 
 ## 2. Prinzipien
 
-- **Keine zweite Dokumentenhaltung.** Die Original-Dokumente liegen ausschließlich in SharePoint. Persistiert werden nur App-State und abgeleitete Analyse-Daten — **niemals** Dauerkopien der Kundendokumente.
-- **Read-only gegenüber SharePoint.** Least privilege bei den Graph-Berechtigungen.
+- **Keine zweite Dokumentenhaltung.** Die Original-Dokumente liegen ausschließlich in SharePoint. Persistiert werden nur App-State und abgeleitete Analyse-Daten — **niemals** Dauerkopien der Kundendokumente. Schreiben heißt: zurück in die SSoT (SharePoint), nicht in einen Zweitspeicher.
+- **Schreiben ist erlaubt, aber abgesichert.** Jede Mutation gegen SharePoint/Outlook läuft ausschließlich über `graph-client → mutate()` und damit durch vier Guardrails: (1) Ops-Kill-Switch `GRAPH_WRITE_ENABLED`, (2) eingeloggter Actor, (3) **Dry-run-Default** — ohne `confirm=1` wird nichts ausgeführt (Mensch-im-Loop-Preview), (4) **lückenloses Audit-Log** (`graph_write_audit` in App-Postgres). Kein direkter Graph-Write am `mutate()`-Pfad vorbei.
 - **KI-Tasks eng umrissen**, mit Quellenbezug, Mensch im Loop.
 
 ### Drei strikt getrennte Datenwelten
@@ -29,7 +29,7 @@ Wichtig — diese drei Speicher haben **nichts** miteinander zu tun:
 
 | Speicher | Inhalt | Rolle |
 |---|---|---|
-| **SharePoint / M365** | Original-Kundendokumente | **Single Source of Truth.** nereo OS liest nur (read-only). |
+| **SharePoint / M365** | Original-Kundendokumente | **Single Source of Truth.** nereo OS liest — und schreibt gezielt zurück (abgesichert, siehe Guardrails oben). Bleibt der einzige Dokumentenspeicher. |
 | **App-Postgres** (self-hosted, Coolify, DB `nereo_app`) | Analyse-Ergebnisse + aus SharePoint abgeleitete/zwischengespeicherte Daten (Index, Metadaten, Agenten-Output) | **Zwischenspeicher / App-Daten.** Enthält **keine** Original-Dokumente, nur Abgeleitetes. *(Entscheidung 2026-06: self-hosted auf dem VPS statt Supabase — Daten bleiben auf dem VPS; getrennte DB von LogTo.)* |
 | **LogTo-Postgres** (self-hosted, Coolify) | Identität, Logins, Sessions | **Nur Auth.** Hat mit den SharePoint-Daten **null** zu tun und sieht keine Projekt-/Analyse-Daten. |
 
@@ -50,14 +50,15 @@ Alle Services liegen in **einem Monorepo**, sauber getrennt. Auf Coolify ergeben
 | **auth** | `auth.` | **LogTo, self-hosted** — Login/Registrierung, Identität, Sessions. |
 | **db** | (intern) | **Postgres für LogTo** (self-hosted) — nur Auth-Daten, siehe §2. |
 
-> App-Daten/Analysen liegen in **Supabase** (extern, cloud) — nicht in diesem `db`-Deployment.
+> App-Daten/Analysen liegen in der **self-hosted App-Postgres** (Coolify, DB `nereo_app`) — getrennt von dieser `db` (= LogTo-Postgres). Siehe §2. *(Kein Supabase mehr — Entscheidung 2026-06.)*
 
 > Domain steht noch nicht fest; `nereo.ch` bevorzugt.
 
 ### Integrationen
-- **Microsoft Graph** (nicht „Outlook API"): einheitliche API für SharePoint/Drive **und** Outlook/Mail. Read-only.
-- **Starke Outlook-Integration:** Mail-Kontext lesen und mit Projekten/Datenräumen verknüpfen.
-- **SharePoint-Sync:** liest Ordnerstrukturen und Dokumente **on demand**, hält keine Dauerkopie; speichert nur Links/Referenzen + abgeleitete Metadaten.
+- **Microsoft Graph** (nicht „Outlook API"): einheitliche API für SharePoint/Drive **und** Outlook/Mail. Lesen + **abgesichertes Schreiben** (siehe Guardrails §2). Azure-App `nereo_os` braucht dafür `Sites.ReadWrite.All` + `Mail.Send` (Application-Permission, Admin-Consent).
+- **Starke Outlook-Integration:** Mail-Kontext lesen und mit Projekten/Datenräumen verknüpfen — und **Mail senden** fürs automatische Nachhaken (`Mail.Send`).
+- **SharePoint-Sync:** liest Ordnerstrukturen und Dokumente **on demand**, hält keine Dauerkopie; speichert nur Links/Referenzen + abgeleitete Metadaten. Schreiben (Datei/Ordner/Metadaten) geht direkt in SharePoint zurück, nie in einen Zweitspeicher.
+- **Write-Schicht:** `packages/graph-client/src/index.js` → `mutate()` + Helfer (`uploadFile`, `replaceFile`, `deleteItem`, `createFolder`, `renameItem`, `moveItem`, `updateListItemFields`, `setDriveItemFields`, `sendMail`). HTTP-Endpoints: `apps/app/src/server.js` unter `/api/write/*`. Audit: `graph_write_audit` (App-Postgres).
 
 ### KI-Agenten (im `app`-Service)
 Definierte, eng umrissene Tasks — kein „KI auf alles":
@@ -98,6 +99,6 @@ CLAUDE.md
 ## 5. Offene Punkte
 
 1. **Wer registriert sich?** v1 = 3 Founder. Self-Service vs. invite-only. Externe Kunden-Logins später + strenger.
-2. **Graph-Berechtigung:** `Sites.Selected` (nur freigegebene Sites) statt tenant-weitem `Sites.Read.All`.
-3. **Outlook-Scope:** rein lesend — oder Mail-Versand fürs Nachhaken (= Schreibrecht)?
+2. **Graph-Berechtigung (ENTSCHIEDEN 2026-06):** **`Sites.ReadWrite.All` tenant-weit** + `Mail.Send` — bewusst maximale Schreibmacht („Monster Tool"). Azure-Admin-Consent für `nereo_os` muss noch gesetzt werden, sonst laufen Writes ins 403. *Trade-off:* tenant-weiter Write ist im Kunden-Security-Review angreifbar; vor institutionellem Go-Live ggf. auf `Sites.Selected`-mit-Write runterskalieren. Bis dahin tragen die App-Guardrails (Kill-Switch + Dry-run + Audit) das Risiko.
+3. **Outlook-Scope (ENTSCHIEDEN):** Mail-Versand fürs Nachhaken aktiv → `Mail.Send`. Endpoint `/api/write/mail`.
 4. **Datenresidenz CH/EU** vor institutionellem Go-Live (zurückgestellt, siehe §2). App-DB ist bereits self-hosted auf dem VPS; vor Go-Live VPS-Standort + KI-Inferenz CH/EU prüfen.

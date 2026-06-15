@@ -1,7 +1,7 @@
 # Lokale Gesamt-Orchestrierung (Entwicklung).
 # In Produktion deployt Coolify die 4 Services einzeln:
 #   landing (Root-Domain), app (app.), auth (LogTo), db (Postgres für LogTo).
-# Supabase ist extern (cloud) und nicht Teil dieses Compose.
+# App-Postgres (DB nereo_app) provisioniert Coolify separat (self-hosted, nicht Teil dieses Compose).
 
 include:
   - infra/docker-compose.logto.yml
@@ -10,7 +10,7 @@ services:
   landing:
     build: ./apps/landing
     ports:
-      - "8080:80"
+      - "8080:3000"
     restart: unless-stopped
 
   app:

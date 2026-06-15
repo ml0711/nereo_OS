@@ -7,7 +7,7 @@ services:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: logto
-      POSTGRES_PASSWORD: ${LOGTO_DB_PASSWORD:-changeme}
+      POSTGRES_PASSWORD: ${LOGTO_DB_PASSWORD:?LOGTO_DB_PASSWORD muss gesetzt sein (kein Default)}
       POSTGRES_DB: logto
     volumes:
       - ./pgdata:/var/lib/postgresql/data
@@ -18,7 +18,7 @@ services:
     depends_on:
       - db
     environment:
-      DB_URL: postgres://logto:${LOGTO_DB_PASSWORD:-changeme}@db:5432/logto
+      DB_URL: postgres://logto:${LOGTO_DB_PASSWORD:?LOGTO_DB_PASSWORD muss gesetzt sein (kein Default)}@db:5432/logto
       ENDPOINT: ${LOGTO_ENDPOINT:-}
       TRUST_PROXY_HEADER: "1"
     entrypoint: ["sh", "-c", "npm run cli db seed -- --swe-role && npm start"]

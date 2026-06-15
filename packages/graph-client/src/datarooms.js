@@ -93,6 +93,7 @@ export function extractDataRooms(index) {
         kind: drive.kind,
         status: statusOf(r.path),
         path: r.path,
+        webUrl: r.node.webUrl ?? null, // Quellen-Link zum Datenraum in SharePoint (CLAUDE.md §1/§3)
         files: s.files,
         folders: s.folders,
         bytes: s.bytes,

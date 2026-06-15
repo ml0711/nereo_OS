@@ -1,11 +1,16 @@
 // Vollständiger Read-Only-Export des gesamten lesbaren Bestands:
 // alle User-OneDrives + alle SharePoint-Sites/Bibliotheken, jede Ebene.
-// Schreibt einen Struktur-Index (Metadaten, KEINE Dateiinhalte) nach .data/graph-index.json
+// Schreibt einen Struktur-Index (Metadaten, KEINE Dateiinhalte).
+//
+// KANONISCHER Speicher = App-Postgres: ist DATABASE_URL gesetzt, schreibt der Export
+// direkt via saveIndex() in die DB (die App liest DB-first). Die Datei
+// .data/graph-index.json bleibt als lokaler Fallback/Debug-Artefakt erhalten.
 //   node packages/graph-client/src/export-index.js
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { graphConfigFromEnv, createGraphClient } from "./index.js";
+import { saveIndex } from "./index-store.js";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 function loadRepoEnv() {
@@ -79,6 +84,19 @@ async function main() {
   mkdirSync(resolve(ROOT, ".data"), { recursive: true });
   const out = resolve(ROOT, ".data/graph-index.json");
   writeFileSync(out, JSON.stringify(index, null, 2));
+
+  // Kanonisch in die App-Postgres schreiben (wenn erreichbar). Non-fatal:
+  // ohne DB bleibt die Datei + späteres seed-index.js (Container) der Weg.
+  if (process.env.DATABASE_URL) {
+    try {
+      await saveIndex(index);
+      console.log(`  ✓ Index direkt nach App-Postgres geschrieben (generatedAtMs=${index.generatedAtMs}).`);
+    } catch (e) {
+      console.log(`  ⚠️ Postgres-Schreiben fehlgeschlagen (Datei bleibt Fallback): ${e.message}`);
+    }
+  } else {
+    console.log("  · DATABASE_URL nicht gesetzt — nur Datei geschrieben (Container seedet später).");
+  }
 
   console.log("\n══════════ GESAMT ══════════");
   grand.apiDrives.sort((a, b) => b.bytes - a.bytes);

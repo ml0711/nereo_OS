@@ -1,7 +1,8 @@
 // nereo OS — App-Service (Dashboard + JSON-API).
 // Gated per OIDC (LogTo): die App ist ihr eigener OIDC-Client + hält die Session.
 // Login -> direkt ins Dashboard; Logout im Dashboard. Read-only Graph-Index aus App-Postgres.
-// Siehe ../../CLAUDE.md §2/§3.
+// SCHREIBEN nach SharePoint/Outlook über /api/write/* — Guardrails: Kill-Switch
+//   (GRAPH_WRITE_ENABLED), Dry-run-Default (confirm=1 führt aus), Audit-Log. Siehe CLAUDE.md §2/§3.
 
 import express from "express";
 import cookieSession from "cookie-session";
@@ -10,7 +11,8 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { extractDataRooms, summarizeDataRooms } from "../../../packages/graph-client/src/datarooms.js";
-import { loadLatestIndex, loadAnalyses } from "../../../packages/graph-client/src/index-store.js";
+import { createGraphClient, graphConfigFromEnv } from "../../../packages/graph-client/src/index.js";
+import { loadLatestIndex, loadAnalyses, logWrite, loadWriteAudit, pingDb } from "../../../packages/graph-client/src/index-store.js";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dir, "../../..");
@@ -26,18 +28,56 @@ const {
   PORT = 3000,
 } = process.env;
 
+// Schreib-Kill-Switch (Ops-Guardrail, unabhängig vom Azure-Consent): Writes nur wenn =1.
+const GRAPH_WRITE_ENABLED = process.env.GRAPH_WRITE_ENABLED === "1";
+
 const ISSUER = LOGTO_ENDPOINT ? `${LOGTO_ENDPOINT.replace(/\/$/, "")}/oidc` : null;
 const REDIRECT_URI = `${APP_BASE_URL.replace(/\/$/, "")}/callback`;
 const AUTH_CONFIGURED = Boolean(LOGTO_ENDPOINT && LOGTO_APP_ID && LOGTO_APP_SECRET);
 
 const app = express();
 app.set("trust proxy", 1); // hinter Traefik (TLS terminiert dort)
+app.use(express.json({ limit: "1mb" })); // JSON-Bodies der /api/write/*-Endpoints
 app.use(cookieSession({
   name: "nereo_app", keys: [SESSION_SECRET], maxAge: 7 * 24 * 3600 * 1000,
   sameSite: "lax", secure: true, httpOnly: true,
 }));
 
+// Schlanke Security-Header (kein helmet-Dep). Kein CSP: das Dashboard nutzt Inline-
+// Styles/Script — strenges CSP würde es brechen (vor Go-Live mit Nonces nachziehen).
+app.use((_req, res, next) => {
+  res.set("X-Content-Type-Options", "nosniff");
+  res.set("X-Frame-Options", "DENY");
+  res.set("Referrer-Policy", "no-referrer");
+  next();
+});
+
 const b64url = (buf) => Buffer.from(buf).toString("base64url");
+
+// Konstantzeit-Vergleich für Secrets (kein Timing-Leak).
+function safeEqual(a, b) {
+  if (!a || !b) return false;
+  const ba = Buffer.from(String(a)), bb = Buffer.from(String(b));
+  return ba.length === bb.length && crypto.timingSafeEqual(ba, bb);
+}
+
+// Dependency-freies In-Memory-Rate-Limit (pro Prozess). Schützt teure Endpoints
+// (Claude-Spend bei /analyze, Graph-Writes) vor versehentlichem Hämmern.
+function rateLimiter({ windowMs, max }) {
+  const hits = new Map();
+  return (key) => {
+    const now = Date.now();
+    const arr = (hits.get(key) || []).filter((t) => now - t < windowMs);
+    if (arr.length >= max) { hits.set(key, arr); return false; }
+    arr.push(now); hits.set(key, arr);
+    return true;
+  };
+}
+const keyOf = (req) => req.session?.user?.sub || req.ip || "anon";
+const analyzeBudget = rateLimiter({ windowMs: 5 * 60 * 1000, max: 30 });
+const writeBudget = rateLimiter({ windowMs: 5 * 60 * 1000, max: 40 });
+const limit = (budget, msg) => (req, res, next) =>
+  budget(keyOf(req)) ? next() : res.status(429).json({ error: msg });
 
 // ---------- OIDC (Authorization-Code + PKCE) ----------
 app.get("/login", (req, res) => {
@@ -107,7 +147,13 @@ function requireAuth(req, res, next) {
 }
 
 // ---------- public ----------
-app.get("/healthz", (_req, res) => res.json({ service: "nereo-os-app", status: "ok" }));
+// status bleibt "ok", solange der Container läuft (Coolify soll ihn nicht wegen
+// DB-Problemen neustarten). db-Feld macht den degradierten Zustand (DB-first fällt
+// still auf Datei zurück) nach außen sichtbar — fürs Monitoring/Alerting.
+app.get("/healthz", async (_req, res) => {
+  const db = !process.env.DATABASE_URL ? "n/a" : (await pingDb()) ? "ok" : "down";
+  res.json({ service: "nereo-os-app", status: "ok", db, write: GRAPH_WRITE_ENABLED });
+});
 
 // ---------- gated: Dashboard + APIs ----------
 app.get("/", (req, res) => {
@@ -151,18 +197,108 @@ app.get("/api/datarooms", requireAuth, async (req, res) => {
 //   ?path=<datenraum>   -> genau dieser Datenraum   (eingeloggt ODER Secret)
 //   ?project=<projekt>  -> alle Räume des Projekts   (eingeloggt ODER Secret)
 //   (ohne Filter)       -> Bulk ALLE — NUR per Secret (curl/cron), nicht aus der Session
+// Secret kommt als Header `X-Analyze-Token` (nicht als URL-Query — sonst landet es in
+// Proxy-/Access-Logs und Browser-History). Vergleich konstantzeitig.
 async function analyzeHandler(req, res) {
-  const bySecret = ANALYZE_TRIGGER_SECRET && req.query.key === ANALYZE_TRIGGER_SECRET;
+  const bySecret = safeEqual(req.get("x-analyze-token"), ANALYZE_TRIGGER_SECRET);
   const bySession = req.session && req.session.user;
   if (!bySecret && !bySession) return res.status(403).json({ error: "forbidden" });
   const { analyzeOne, analyzeProject, analyzeMissing } = await import("./analyze.js");
   const force = req.query.force === "1";
   if (req.query.path) return res.json(await analyzeOne(String(req.query.path)));
   if (req.query.project) return res.json(await analyzeProject(String(req.query.project), { force }));
-  if (!bySecret) return res.status(400).json({ error: "Bulk-Analyse nur per Secret. Nutze ?path= oder ?project= (Token-Schutz)." });
+  if (!bySecret) return res.status(400).json({ error: "Bulk-Analyse nur per Secret (Header X-Analyze-Token). Nutze ?path= oder ?project= (Token-Schutz)." });
   return res.json(await analyzeMissing({ force }));
 }
-app.get("/api/datarooms/analyze", analyzeHandler);
-app.post("/api/datarooms/analyze", analyzeHandler);
+app.get("/api/datarooms/analyze", limit(analyzeBudget, "Zu viele Analyse-Anfragen — kurz warten."), analyzeHandler);
+app.post("/api/datarooms/analyze", limit(analyzeBudget, "Zu viele Analyse-Anfragen — kurz warten."), analyzeHandler);
 
-app.listen(PORT, () => console.log(`nereo OS app listening on :${PORT} (auth=${AUTH_CONFIGURED})`));
+// =====================================================================
+// SCHREIBEN nach SharePoint / Outlook  —  /api/write/*
+// Guardrails (CLAUDE.md §2):
+//   1) GRAPH_WRITE_ENABLED=1 muss gesetzt sein (Ops-Kill-Switch).
+//   2) Eingeloggt (requireAuth) — der Actor landet im Audit-Log.
+//   3) DRY-RUN ist Default: ohne ?confirm=1 wird NICHTS ausgeführt, nur das
+//      geplante Kommando zurückgegeben (Mensch-im-Loop-Preview).
+//   4) Jede Mutation (auch Dry-run/Fehler) -> graph_write_audit in App-Postgres.
+// =====================================================================
+function requireWrite(req, res, next) {
+  if (!GRAPH_WRITE_ENABLED)
+    return res.status(503).json({ error: "Schreibzugriff deaktiviert. GRAPH_WRITE_ENABLED=1 setzen." });
+  try { graphConfigFromEnv(); }
+  catch (e) { return res.status(503).json({ error: e.message }); }
+  next();
+}
+
+// Baut den Graph-Client für diesen Request: Actor fürs Audit + dryRun außer confirm=1.
+function graphFor(req) {
+  const confirm = req.query.confirm === "1" || req.body?.confirm === true || req.body?.confirm === "1";
+  const u = req.session?.user ?? {};
+  const actor = u.email || u.username || u.sub || "unknown";
+  const client = createGraphClient(graphConfigFromEnv(), {
+    dryRun: !confirm,
+    onWrite: (op) => logWrite({ ...op, actor }).catch((e) => console.error("Audit-Log:", e.message)),
+  });
+  return { client, confirm };
+}
+
+// Einheitliche Ausführung + Antwort. dryRun?-Flag macht im UI klar: Preview vs. echt.
+async function runWrite(req, res, fn) {
+  const { client, confirm } = graphFor(req);
+  try {
+    const result = await fn(client);
+    res.json({ executed: confirm, dryRun: !confirm, result });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.body ?? e.message, dryRun: !confirm });
+  }
+}
+
+const W = [requireAuth, requireWrite, limit(writeBudget, "Zu viele Schreib-Aktionen — kurz warten.")];
+
+// --- Ordner / Struktur ---
+app.post("/api/write/folder", ...W, (req, res) =>
+  runWrite(req, res, (g) => g.createFolder(req.body.driveId, req.body.parentItemId, req.body.name)));
+app.patch("/api/write/rename", ...W, (req, res) =>
+  runWrite(req, res, (g) => g.renameItem(req.body.driveId, req.body.itemId, req.body.newName)));
+app.patch("/api/write/move", ...W, (req, res) =>
+  runWrite(req, res, (g) => g.moveItem(req.body.driveId, req.body.itemId, req.body.newParentItemId)));
+
+// --- Löschen (destruktiv -> Papierkorb) ---
+app.delete("/api/write/item", ...W, (req, res) =>
+  runWrite(req, res, (g) =>
+    g.deleteItem(req.body.driveId ?? req.query.driveId, req.body.itemId ?? req.query.itemId)));
+
+// --- SharePoint-Metadaten / Status-Spalten ---
+app.patch("/api/write/fields", ...W, (req, res) =>
+  runWrite(req, res, (g) =>
+    req.body.listId
+      ? g.updateListItemFields(req.body.siteId, req.body.listId, req.body.itemId, req.body.fields)
+      : g.setDriveItemFields(req.body.driveId, req.body.itemId, req.body.fields)));
+
+// --- Dateien (raw Body, Simple Upload bis 4 MB; Params via Query) ---
+app.put("/api/write/upload", ...W, express.raw({ type: "*/*", limit: "4mb" }), (req, res) =>
+  runWrite(req, res, (g) =>
+    g.uploadFile(req.query.driveId, req.query.parentItemId, req.query.name, req.body, req.query.contentType)));
+app.put("/api/write/replace", ...W, express.raw({ type: "*/*", limit: "4mb" }), (req, res) =>
+  runWrite(req, res, (g) =>
+    g.replaceFile(req.query.driveId, req.query.itemId, req.body, req.query.contentType)));
+
+// --- Outlook: Mail senden (Nachhaken) ---
+app.post("/api/write/mail", ...W, (req, res) =>
+  runWrite(req, res, (g) => {
+    const message = {
+      subject: req.body.subject,
+      body: { contentType: req.body.html ? "HTML" : "Text", content: req.body.body },
+      toRecipients: (req.body.to ?? []).map((address) => ({ emailAddress: { address } })),
+    };
+    return g.sendMail(req.body.from, message, req.body.saveToSentItems !== false);
+  }));
+
+// --- Audit-Log lesen (Transparenz: was hat das Tool geschrieben?) ---
+app.get("/api/write/audit", requireAuth, async (req, res) => {
+  try { res.json({ entries: await loadWriteAudit(req.query.limit) }); }
+  catch (e) { res.status(503).json({ error: e.message }); }
+});
+
+app.listen(PORT, () =>
+  console.log(`nereo OS app listening on :${PORT} (auth=${AUTH_CONFIGURED}, write=${GRAPH_WRITE_ENABLED})`));

@@ -3,13 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "nereo OS landing — nur Login (LogTo OIDC, Authorization-Code + PKCE)",
+  "description": "nereo OS landing — minimaler Einstieg (Markenname + Anmelden-Link zur App)",
   "scripts": {
     "start": "node src/server.js",
     "dev": "node src/server.js"
   },
   "dependencies": {
-    "cookie-session": "^2.1.0",
     "express": "^4.21.2"
   }
 }

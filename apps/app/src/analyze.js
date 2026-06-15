@@ -85,12 +85,22 @@ ${cats}`;
   const resp = await cl.messages.create({
     model: MODEL,
     max_tokens: 1500,
-    // Schema/Instruktionen als (cachebarer) System-Prompt; volatiler Datenraum im User-Turn.
+    // System-Prompt als eigener Block markiert. Hinweis: cache_control greift erst, wenn der
+    // stabile Präfix das Modell-Minimum überschreitet (Haiku 4.5 = 4096 Tokens) — der aktuelle
+    // SYSTEM-Prompt liegt darunter, der Breakpoint ist also (noch) wirkungslos. Bewusst belassen:
+    // sobald SYSTEM wächst (mehr Schema/Beispiele), greift Caching ohne weitere Änderung.
     system: [{ type: "text", text: SYSTEM, cache_control: { type: "ephemeral" } }],
     // Strukturierte Ausgabe -> garantiert valides JSON nach ANALYSIS_SCHEMA.
     output_config: { format: { type: "json_schema", schema: ANALYSIS_SCHEMA } },
     messages: [{ role: "user", content: user }],
   });
+
+  // stop_reason VOR dem Parsen prüfen: bei "refusal" ist content leer, bei "max_tokens"
+  // ist das JSON abgeschnitten — beides würde JSON.parse mit kryptischem Fehler werfen.
+  if (resp.stop_reason === "refusal")
+    throw new Error("KI hat die Analyse abgelehnt (stop_reason=refusal).");
+  if (resp.stop_reason === "max_tokens")
+    throw new Error("KI-Antwort abgeschnitten (max_tokens) — Datenraum zu groß für 1500 Tokens.");
 
   const text = (resp.content.find((b) => b.type === "text") || {}).text || "{}";
   const analysis = JSON.parse(text);
