@@ -45,3 +45,42 @@ export async function loadLatestIndex() {
   );
   return rows[0]?.payload ?? null;
 }
+
+// --- KI-Agenten-Output: Datenraum-Analysen (CLAUDE.md §3) ---
+let analysisSchemaReady = false;
+async function ensureAnalysisSchema() {
+  if (analysisSchemaReady) return;
+  const p = await getPool();
+  await p.query(`
+    CREATE TABLE IF NOT EXISTS dataroom_analysis (
+      dataroom_key text PRIMARY KEY,         -- stabiler Schlüssel = Datenraum-Pfad
+      project      text,
+      name         text,
+      analysis     jsonb NOT NULL,
+      model        text,
+      analyzed_at  timestamptz NOT NULL DEFAULT now()
+    )`);
+  analysisSchemaReady = true;
+}
+
+export async function saveAnalysis(room, analysis) {
+  await ensureAnalysisSchema();
+  const p = await getPool();
+  await p.query(
+    `INSERT INTO dataroom_analysis (dataroom_key, project, name, analysis, model)
+     VALUES ($1,$2,$3,$4,$5)
+     ON CONFLICT (dataroom_key) DO UPDATE
+       SET analysis=$4, model=$5, project=$2, name=$3, analyzed_at=now()`,
+    [room.path, room.project ?? null, room.name ?? null, JSON.stringify(analysis), analysis?.model ?? null]
+  );
+}
+
+// Map: dataroom-path -> analysis (inkl. model + analyzedAt)
+export async function loadAnalyses() {
+  await ensureAnalysisSchema();
+  const p = await getPool();
+  const { rows } = await p.query(`SELECT dataroom_key, analysis, model, analyzed_at FROM dataroom_analysis`);
+  const map = {};
+  for (const r of rows) map[r.dataroom_key] = { ...r.analysis, model: r.model, analyzedAt: r.analyzed_at };
+  return map;
+}

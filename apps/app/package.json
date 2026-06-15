@@ -2,11 +2,15 @@
   "name": "@nereoos/app",
   "version": "0.0.1",
   "private": true,
+  "type": "module",
   "description": "nereo OS App (app.) — Frontend + Backend + KI-Agenten",
   "scripts": {
     "dev": "node src/server.js",
     "build": "echo \"TODO: app build\" && exit 0",
-    "start": "node src/server.js"
+    "start": "node src/server.js",
+    "analyze": "node src/run-analysis.js"
   },
-  "dependencies": {}
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.70.0"
+  }
 }
