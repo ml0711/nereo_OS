@@ -123,6 +123,9 @@ app.get("/callback", async (req, res) => {
     const tok = await r.json();
     const claims = JSON.parse(Buffer.from(tok.id_token.split(".")[1], "base64url").toString());
     req.session.user = { sub: claims.sub, email: claims.email, name: claims.name, username: claims.username };
+    // id_token aufheben: LogTo braucht ihn beim Logout als id_token_hint, um die
+    // SSO-Session wirklich zu beenden (sonst still re-login -> "trotzdem eingeloggt").
+    req.session.idToken = tok.id_token;
     req.session.pkce = undefined;
     req.session.state = undefined;
     res.redirect("/");
@@ -132,9 +135,14 @@ app.get("/callback", async (req, res) => {
 });
 
 app.get("/logout", (req, res) => {
+  // id_token VOR dem Leeren der Session sichern — ohne id_token_hint beendet LogTo
+  // die SSO-Session nicht zuverlässig, der nächste /login re-authentifiziert still
+  // durch und der User landet sofort wieder im Dashboard ("trotzdem eingeloggt").
+  const idToken = req.session?.idToken;
   req.session = null;
   if (!AUTH_CONFIGURED) return res.redirect("/");
   const u = new URL(`${ISSUER}/session/end`);
+  if (idToken) u.searchParams.set("id_token_hint", idToken);
   u.searchParams.set("client_id", LOGTO_APP_ID);
   u.searchParams.set("post_logout_redirect_uri", APP_BASE_URL);
   res.redirect(u.toString());
