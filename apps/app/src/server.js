@@ -51,6 +51,11 @@ app.use((_req, res, next) => {
   res.set("X-Content-Type-Options", "nosniff");
   res.set("X-Frame-Options", "DENY");
   res.set("Referrer-Policy", "no-referrer");
+  // no-store: das gegatete Dashboard + JSON-APIs nie cachen. Sonst zeigt der
+  // Browser (Zurück-Button / bfcache / zweiter Tab) nach dem Logout die
+  // gecachte Ansicht — sieht aus wie "noch eingeloggt". Keine cachebaren
+  // Static-Assets im app-Service, daher global unbedenklich.
+  res.set("Cache-Control", "no-store");
   next();
 });
 
