@@ -119,9 +119,10 @@ ${cats}`;
  *  room.path ist drive-relativ == cached dataroom_key → die Analyse landet unter demselben
  *  Schlüssel wie der index-basierte Pfad. analyzeDataRoom + saveAnalysis bleiben unverändert. */
 export async function analyzeLiveRoom(room) {
+  const readAt = new Date(); // Quelle (Live-Walk) wurde gerade gelesen → Staleness-Bezugspunkt
   try {
     const a = await analyzeDataRoom(room);
-    await saveAnalysis(room, a);
+    await saveAnalysis(room, a, readAt);
     // result = portfolio-kompatibles room-Objekt inkl. Analyse → Frontend kann es direkt
     // mit cardHtml(result) rendern (gleiche Form wie /api/datarooms rooms[]).
     return {
@@ -137,6 +138,7 @@ export async function analyzeLiveRoom(room) {
 export async function analyzeMissing({ force = false } = {}) {
   const index = await loadLatestIndex();
   if (!index) return { error: "Kein Graph-Index in der DB. Erst graph:export + Seed." };
+  const readAt = new Date(); // Index-Lesezeit = Staleness-Bezugspunkt für alle Räume dieses Laufs
   const rooms = extractDataRooms(index);
   const existing = force ? {} : await loadAnalyses().catch(() => ({}));
   const result = { total: rooms.length, analyzed: 0, skipped: 0, failed: 0, tokens: { input: 0, output: 0 }, items: [] };
@@ -144,7 +146,7 @@ export async function analyzeMissing({ force = false } = {}) {
     if (existing[room.path]) { result.skipped++; continue; }
     try {
       const a = await analyzeDataRoom(room);
-      await saveAnalysis(room, a);
+      await saveAnalysis(room, a, readAt);
       result.analyzed++;
       result.tokens.input += a.usage?.input || 0;
       result.tokens.output += a.usage?.output || 0;
@@ -161,11 +163,12 @@ export async function analyzeMissing({ force = false } = {}) {
 export async function analyzeOne(path) {
   const index = await loadLatestIndex();
   if (!index) return { error: "Kein Graph-Index in der DB." };
+  const readAt = new Date();
   const room = extractDataRooms(index).find((r) => r.path === path);
   if (!room) return { error: "Datenraum nicht gefunden." };
   try {
     const a = await analyzeDataRoom(room);
-    await saveAnalysis(room, a);
+    await saveAnalysis(room, a, readAt);
     return { analyzed: 1, failed: 0, room: room.name, project: room.project, score: a.completeness_score, tokens: a.usage };
   } catch (e) {
     return { analyzed: 0, failed: 1, room: room.name, error: e.message };
@@ -176,6 +179,7 @@ export async function analyzeOne(path) {
 export async function analyzeProject(project, { force = false } = {}) {
   const index = await loadLatestIndex();
   if (!index) return { error: "Kein Graph-Index in der DB." };
+  const readAt = new Date();
   const rooms = extractDataRooms(index).filter((r) => r.project === project);
   if (!rooms.length) return { error: "Projekt nicht gefunden." };
   const existing = force ? {} : await loadAnalyses().catch(() => ({}));
@@ -184,7 +188,7 @@ export async function analyzeProject(project, { force = false } = {}) {
     if (existing[room.path]) { r.skipped++; continue; }
     try {
       const a = await analyzeDataRoom(room);
-      await saveAnalysis(room, a);
+      await saveAnalysis(room, a, readAt);
       r.analyzed++; r.tokens.input += a.usage?.input || 0; r.tokens.output += a.usage?.output || 0;
       r.items.push({ name: room.name, score: a.completeness_score });
     } catch (e) { r.failed++; r.items.push({ name: room.name, error: e.message }); }

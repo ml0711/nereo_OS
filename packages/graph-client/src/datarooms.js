@@ -113,6 +113,17 @@ export function extractDataRooms(index) {
   return rooms;
 }
 
+/** Welcher Datenraum-Key (room.path) ist Präfix des geänderten Item-Pfads?
+ *  roomPaths sind disjunkt/präfixfrei (extractDataRooms behält nur oberste Roots) → höchstens einer.
+ *  Guard mit '/' verhindert, dass "/X/Datenraum_v3" fälschlich "/X/Datenraum_v3_alt" matcht. */
+export function dataRoomKeyForChangedPath(changedPath, roomPaths) {
+  if (!changedPath) return null;
+  for (const key of roomPaths) {
+    if (changedPath === key || changedPath.startsWith(`${key}/`)) return key;
+  }
+  return null;
+}
+
 /** Portfolio-Kennzahlen über alle Datenräume. */
 export function summarizeDataRooms(rooms) {
   const byStatus = {};

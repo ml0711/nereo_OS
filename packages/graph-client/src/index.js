@@ -281,6 +281,32 @@ export function createGraphClient(cfg, opts = {}) {
       );
     },
 
+    // --- Delta (Realtime-Sync, CLAUDE.md §3) ---
+    /** Inkrementelle Änderungen einer Drive seit `token`.
+     *  token=null     → Voll-Delta vom Start (alle Items + finaler deltaToken).
+     *  token="latest" → nur den aktuellen deltaToken holen, OHNE Itemstrom (Bootstrap).
+     *  token=<wert>   → nur Änderungen seit diesem Token.
+     *  Liefert { items, deltaToken } (deltaToken aus @odata.deltaLink). */
+    async driveDelta(driveId, token = null) {
+      const SEL = "id,name,size,folder,file,deleted,parentReference,lastModifiedDateTime";
+      let next =
+        token === "latest"
+          ? `/drives/${driveId}/root/delta?token=latest`
+          : token
+          ? `/drives/${driveId}/root/delta?token=${encodeURIComponent(token)}`
+          : `/drives/${driveId}/root/delta?$select=${SEL}&$top=200`;
+      const items = [];
+      let deltaLink = null;
+      while (next) {
+        const page = await request(next);
+        if (Array.isArray(page.value)) items.push(...page.value);
+        if (page["@odata.deltaLink"]) { deltaLink = page["@odata.deltaLink"]; break; }
+        next = page["@odata.nextLink"] ?? null;
+      }
+      const m = deltaLink && deltaLink.match(/[?&]token=([^&]+)/);
+      return { items, deltaToken: m ? decodeURIComponent(m[1]) : null };
+    },
+
     // ===================================================================
     // SCHREIBEN (Guardrails über mutate(): dryRun + Audit). Braucht in Azure
     // Application-Permission Sites.ReadWrite.All bzw. Mail.Send + Admin-Consent.
@@ -333,5 +359,36 @@ export function createGraphClient(cfg, opts = {}) {
       mutate("POST", `/users/${encodeURIComponent(fromUserId)}/sendMail`,
         { json: { message, saveToSentItems },
           label: `mail -> ${(message?.toRecipients ?? []).map((r) => r.emailAddress?.address).join(", ")}` }),
+
+    // ===================================================================
+    // SUBSCRIPTIONS (Change-Notifications, Realtime-Sync). BEWUSST NICHT über mutate():
+    // Subscriptions sind Graph-METADATEN (Benachrichtigungs-Plumbing), KEIN Schreiben in die
+    // SSoT (SharePoint/Outlook). Daher kein Kill-Switch/Dry-run/Audit-Pfad. Read-only-Scope reicht.
+    // ===================================================================
+    createSubscription: ({ resource, notificationUrl, clientState, expirationDateTime, changeType = "updated" }) =>
+      graphCall("POST", "/subscriptions", { changeType, notificationUrl, resource, clientState, expirationDateTime }),
+    renewSubscription: (id, expirationDateTime) =>
+      graphCall("PATCH", `/subscriptions/${id}`, { expirationDateTime }),
+    deleteSubscription: (id) => graphCall("DELETE", `/subscriptions/${id}`),
+    listSubscriptions: () => graphCall("GET", "/subscriptions"),
   };
+
+  // Schlanker JSON-Graph-Call NUR für Subscription-CRUD (siehe Abgrenzung oben). Kein dryRun/Audit.
+  async function graphCall(method, path, json) {
+    const res = await fetch(`${GRAPH}${path}`, {
+      method,
+      headers: { authorization: await authHeader(), "content-type": "application/json", accept: "application/json" },
+      body: json ? JSON.stringify(json) : undefined,
+    });
+    const text = await res.text();
+    let j = null;
+    try { j = JSON.parse(text); } catch {}
+    if (!res.ok) {
+      const err = new Error(`Graph ${method} ${path} → HTTP ${res.status}`);
+      err.status = res.status;
+      err.body = j?.error ?? text.slice(0, 400);
+      throw err;
+    }
+    return res.status === 204 ? { ok: true } : j ?? { ok: true };
+  }
 }

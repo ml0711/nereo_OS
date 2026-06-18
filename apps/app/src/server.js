@@ -12,9 +12,11 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { extractDataRooms, summarizeDataRooms, isDataRoomName } from "../../../packages/graph-client/src/datarooms.js";
 import { createGraphClient, graphConfigFromEnv } from "../../../packages/graph-client/src/index.js";
-import { loadLatestIndex, loadAnalyses, logWrite, loadWriteAudit, pingDb } from "../../../packages/graph-client/src/index-store.js";
+import { loadLatestIndex, loadAnalyses, logWrite, loadWriteAudit, pingDb,
+  loadSubscriptionById, loadActiveSubscriptions, markDirty, claimDirtySubscription, finishProcessing } from "../../../packages/graph-client/src/index-store.js";
 import { resolveRoot, safeRelSegments } from "../../../packages/graph-client/src/workspace.js";
 import { resolveCapability, serializeCapability } from "../../../packages/graph-client/src/structure.js";
+import { deltaThenRewalkAndSave } from "../../../packages/graph-client/src/sync.js";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dir, "../../..");
@@ -32,6 +34,8 @@ const {
 
 // Schreib-Kill-Switch (Ops-Guardrail, unabhängig vom Azure-Consent): Writes nur wenn =1.
 const GRAPH_WRITE_ENABLED = process.env.GRAPH_WRITE_ENABLED === "1";
+// Secret für den (optionalen) HTTP-Renew-Trigger /api/graph/renew (Header X-Graph-Cron).
+const GRAPH_CRON_SECRET = process.env.GRAPH_CRON_SECRET;
 
 const ISSUER = LOGTO_ENDPOINT ? `${LOGTO_ENDPOINT.replace(/\/$/, "")}/oidc` : null;
 const REDIRECT_URI = `${APP_BASE_URL.replace(/\/$/, "")}/callback`;
@@ -84,6 +88,7 @@ const keyOf = (req) => req.session?.user?.sub || req.ip || "anon";
 const analyzeBudget = rateLimiter({ windowMs: 5 * 60 * 1000, max: 30 });
 const writeBudget = rateLimiter({ windowMs: 5 * 60 * 1000, max: 40 });
 const navBudget = rateLimiter({ windowMs: 60 * 1000, max: 60 }); // Live-Navigation = Graph-Call-Verstärker
+const webhookBudget = rateLimiter({ windowMs: 60 * 1000, max: 240 }); // öffentlicher Webhook: Flut-Schutz (pro IP)
 const limit = (budget, msg) => (req, res, next) =>
   budget(keyOf(req)) ? next() : res.status(429).json({ error: msg });
 
@@ -123,6 +128,61 @@ async function descend(client, root, segments) {
     cur = next;
   }
   return cur;
+}
+
+// ---------- Realtime-Sync: Notification-Verarbeitung (CLAUDE.md §3) ----------
+// Notification = NUR Trigger. clientState verifizieren (Echtheit) -> dirty markieren -> verarbeiten.
+// Verarbeitung läuft single-flight (claimDirtySubscription + In-Prozess-Flag) entkoppelt vom Request.
+async function handleNotifications(notifications) {
+  if (!notifications.length) return;
+  // Eindeutige subscriptionIds einsammeln und die Subscriptions EINMAL laden (statt 1 DB-Query je
+  // Notification → kein Last-Verstärker bei Notification-Fluten). clientState konstantzeit prüfen.
+  const byId = new Map((await loadActiveSubscriptions().catch(() => [])).map((s) => [s.id, s]));
+  const toDirty = new Set();
+  for (const n of notifications) {
+    const sub = byId.get(n?.subscriptionId);
+    if (!sub) continue;
+    if (!safeEqual(n.clientState, sub.client_state)) { console.warn("[webhook] clientState-Mismatch:", n?.subscriptionId); continue; }
+    toDirty.add(sub.id);
+  }
+  for (const id of toDirty) await markDirty(id).catch((e) => console.error("[webhook] markDirty:", e.message));
+  if (toDirty.size) await processDirtyOnce();
+}
+
+let _syncing = false;
+let _rerun = false;
+async function processDirtyOnce() {
+  // Re-Run-Latch: kommt eine Notification im Gap zwischen letztem (null-)Claim und _syncing=false,
+  // wird sie gemerkt und sofort nachgezogen — statt erst beim 60s-Tick.
+  if (_syncing) { _rerun = true; return; }
+  _syncing = true;
+  try {
+    do {
+      _rerun = false;
+      let claimed;
+      while ((claimed = await claimDirtySubscription())) {
+        try {
+          const { root } = await resolveRoot(navClient());
+          if (!root || root.driveId !== claimed.drive_id) { await finishProcessing(claimed.id, {}); continue; }
+          const r = await deltaThenRewalkAndSave({
+            client: navClient(), driveId: root.driveId, rootItemId: root.itemId, rootName: root.name,
+            subscriptionId: claimed.id, prevToken: claimed.delta_token,
+          });
+          await finishProcessing(claimed.id, { lastSyncAt: new Date() });
+          if (r.changed) console.log(`[sync] ${r.items} Änderung(en), ${r.affected.length} Datenraum/-räume markiert`);
+        } catch (e) {
+          // Lease lösen; dirty bleibt false. Verlorene Änderung holt das Delta-Poll-Sicherheitsnetz nach.
+          console.error("[sync] Verarbeitung fehlgeschlagen:", e.status ?? "", e.message);
+          await finishProcessing(claimed.id, {}).catch(() => {});
+          break; // nicht in einer Fehlerschleife festhängen
+        }
+      }
+    } while (_rerun);
+  } catch (e) {
+    console.error("[sync] claim/processDirty:", e.message);
+  } finally {
+    _syncing = false;
+  }
 }
 
 // ---------- OIDC (Authorization-Code + PKCE) ----------
@@ -206,7 +266,56 @@ function requireAuth(req, res, next) {
 // still auf Datei zurück) nach außen sichtbar — fürs Monitoring/Alerting.
 app.get("/healthz", async (_req, res) => {
   const db = !process.env.DATABASE_URL ? "n/a" : (await pingDb()) ? "ok" : "down";
-  res.json({ service: "nereo-os-app", status: "ok", db, write: GRAPH_WRITE_ENABLED });
+  // Sync-Watchdog: Subscription-Ablauf + Alter des letzten erfolgreichen Syncs nach außen sichtbar.
+  // Ein externer Uptime-Check kann auf 'expiration in Vergangenheit' ODER 'lastSyncAt zu alt' alarmieren
+  // (schützt vor dem gefährlichsten Zustand: stiller Tod auf alten Daten).
+  let sync = null;
+  if (process.env.DATABASE_URL) {
+    try {
+      const s = (await loadActiveSubscriptions())[0];
+      if (s) sync = { expiration: s.expiration, lastSyncAt: s.last_sync_at, dirty: s.dirty };
+    } catch {}
+  }
+  res.json({ service: "nereo-os-app", status: "ok", db, write: GRAPH_WRITE_ENABLED, sync });
+});
+
+// ---------- Realtime-Sync: Graph-Webhook (öffentlich, NICHT requireAuth) ----------
+// Abgesichert NICHT per Session, sondern per clientState-Secret pro Notification (in handleNotifications).
+// Request-Pfad macht NULL Blocking-I/O (10s-Validierungsfenster) — Verarbeitung läuft via setImmediate.
+function echoValidation(req, res) {
+  if (req.query.validationToken != null) {
+    res.set("content-type", "text/plain").status(200).send(String(req.query.validationToken));
+    return true;
+  }
+  return false;
+}
+app.get("/api/graph/webhook", (req, res) => {
+  if (echoValidation(req, res)) return;
+  res.sendStatus(400);
+});
+app.post("/api/graph/webhook", (req, res) => {
+  if (echoValidation(req, res)) return; // Handshake (Create/Re-Validation)
+  res.sendStatus(202); // IMMER sofort bestätigen (sonst retryt Graph → mehr Last); kein I/O im Request-Pfad
+  if (!webhookBudget(req.ip || "anon")) return; // Flut: bestätigt, aber keine Arbeit einplanen
+  // Harte Obergrenze gegen Notification-Flut; handleNotifications dedupt zusätzlich + lädt Subs einmal.
+  const notifications = (Array.isArray(req.body?.value) ? req.body.value : []).slice(0, 50);
+  setImmediate(() => handleNotifications(notifications).catch((e) => console.error("[webhook]", e.message)));
+});
+
+// Optionaler manueller Renew-Trigger (primärer Weg ist die CLI 'graph:subscribe' als Coolify-Task).
+// Maschinell, Secret NUR via Header X-Graph-Cron (kein ?key= — Query-Secrets landen in Proxy-/Access-Logs).
+app.get("/api/graph/renew", async (req, res) => {
+  if (!GRAPH_CRON_SECRET || !safeEqual(req.get("x-graph-cron"), GRAPH_CRON_SECRET))
+    return res.status(403).json({ error: "forbidden" });
+  try {
+    const { root, reason } = await resolveRoot(navClient());
+    if (!root) return res.status(503).json({ error: reason || "Wurzel nicht auflösbar." });
+    const { reconcileSubscription } = await import("../../../packages/graph-client/src/subscriptions.js");
+    const notificationUrl = `${APP_BASE_URL.replace(/\/$/, "")}/api/graph/webhook`;
+    res.json(await reconcileSubscription({ client: navClient(), driveId: root.driveId, notificationUrl }));
+  } catch (e) {
+    res.status(e.status || 502).json({ error: e.body ?? e.message });
+  }
 });
 
 // ---------- gated: Dashboard + APIs ----------
@@ -480,6 +589,13 @@ app.get("/api/write/audit", requireAuth, async (req, res) => {
   try { res.json({ entries: await loadWriteAudit(req.query.limit) }); }
   catch (e) { res.status(503).json({ error: e.message }); }
 });
+
+// Fallback-Tick: holt dirty-Subscriptions nach, falls ein setImmediate beim Neustart verloren ging
+// (Webhook-Notification kam, Verarbeitung nicht). Idempotent + single-flight; no-op ohne dirty-Zeilen.
+// Der eigentliche Korrektheits-Backstop ist der separate Delta-Poll (Coolify Task 'graph:sync').
+if (process.env.DATABASE_URL) {
+  setInterval(() => { processDirtyOnce().catch(() => {}); }, 60_000).unref();
+}
 
 app.listen(PORT, () =>
   console.log(`nereo OS app listening on :${PORT} (auth=${AUTH_CONFIGURED}, write=${GRAPH_WRITE_ENABLED})`));

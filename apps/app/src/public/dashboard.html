@@ -137,6 +137,8 @@
   .ai .sum{font-size:13.5px;color:var(--txt);margin-top:11px;line-height:1.6}
   .ai .none{color:var(--mut)}
   .noai{margin-top:13px;border-top:1px dashed var(--line);padding-top:12px;color:var(--mut2);font-size:13px}
+  .stale{margin:11px 0 4px;padding:8px 11px;border-radius:8px;font-size:12.5px;
+    background:rgba(230,162,60,.13);border:1px solid rgba(230,162,60,.3);color:var(--warn)}
   .state{padding:46px 20px;text-align:center;color:var(--mut)}
   .state.err{color:var(--bad)}
   .note{font-size:12.5px;color:var(--mut2)}
@@ -219,10 +221,12 @@ function aiHtml(a){
   const gaps=(a.critical_gaps||[]).map(g=>`<li><span class="sev ${esc(g.importance)}">${esc(g.importance)}</span><span><b>${esc(g.category)}</b> — ${esc(g.note)}</span></li>`).join("");
   const risks=(a.risks||[]).map(r=>`<li><span class="sev ${esc(r.severity)}">${esc(r.severity)}</span><span><b>${esc(r.title)}</b> — ${esc(r.detail)}</span></li>`).join("");
   const inc=(a.inconsistencies||[]).map(i=>`<li><span class="sev mittel">!</span><span>${esc(i)}</span></li>`).join("");
+  const stale=a.stale?`<div class="stale">⚠ Datenraum hat sich seit der Analyse${a.analyzedAt?` vom ${fmtDate(a.analyzedAt)}`:""} geändert — Ergebnis evtl. veraltet.</div>`:"";
   return `<div class="ai">
     <div class="ai-head"><span class="tag">KI-ANALYSE</span>
       <span>Score <span class="score" style="color:${sc}">${a.completeness_score}</span>/100</span>
       <span class="note" style="margin-left:auto">${esc(a.model||"")}</span></div>
+    ${stale}
     <div class="sum">${esc(a.summary||"")}</div>
     ${gaps?`<h4>Kritische Lücken (${a.critical_gaps.length})</h4><ul>${gaps}</ul>`:`<h4>Lücken</h4><div class="none note">keine kritischen Lücken erkannt</div>`}
     ${risks?`<h4>Risiken (${a.risks.length})</h4><ul>${risks}</ul>`:""}
@@ -235,7 +239,8 @@ function cardHtml(r,opts={}){
   const pct=Math.round(r.schema.matched/r.schema.total*100);
   const cats=r.schema.categories.map(c=>`<div class="cat ${c.present?'present':''}"><span class="dot ${c.present?'y':'n'}"></span>${c.num}_${esc(c.label)}${c.present&&c.files?` <span class="note">(${c.files})</span>`:""}</div>`).join("");
   const types=(r.fileTypes||[]).map(([e,n])=>`<span class="type">${esc(e)} ${n}</span>`).join("");
-  const btn=`<button class="btn ghost sm" data-action="live-room" data-path="${esc(opts.livePath??"")}" style="margin-left:auto">${r.analysis?'↻ Neu analysieren':'✦ KI-Analyse'}</button>`;
+  const reLbl=r.analysis?(r.analysis.stale?'↻ Neu analysieren (veraltet)':'↻ Neu analysieren'):'✦ KI-Analyse';
+  const btn=`<button class="btn ${r.analysis&&r.analysis.stale?'acc':'ghost'} sm" data-action="live-room" data-path="${esc(opts.livePath??"")}" style="margin-left:auto">${reLbl}</button>`;
   return `<div class="card">
     <div class="head">
       <h3>${esc(r.name)}</h3>
