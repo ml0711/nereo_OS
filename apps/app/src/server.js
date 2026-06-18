@@ -13,7 +13,7 @@ import { dirname, resolve } from "node:path";
 import { extractDataRooms, summarizeDataRooms, isDataRoomName } from "../../../packages/graph-client/src/datarooms.js";
 import { createGraphClient, graphConfigFromEnv } from "../../../packages/graph-client/src/index.js";
 import { loadLatestIndex, loadAnalyses, logWrite, loadWriteAudit, pingDb,
-  loadSubscriptionById, loadActiveSubscriptions, markDirty, claimDirtySubscription, finishProcessing } from "../../../packages/graph-client/src/index-store.js";
+  loadSubscriptionById, loadSubscriptionByDrive, loadActiveSubscriptions, markDirty, claimDirtySubscription, claimSubscriptionForSync, finishProcessing } from "../../../packages/graph-client/src/index-store.js";
 import { resolveRoot, safeRelSegments } from "../../../packages/graph-client/src/workspace.js";
 import { resolveCapability, serializeCapability } from "../../../packages/graph-client/src/structure.js";
 import { deltaThenRewalkAndSave } from "../../../packages/graph-client/src/sync.js";
@@ -182,6 +182,64 @@ async function processDirtyOnce() {
     console.error("[sync] claim/processDirty:", e.message);
   } finally {
     _syncing = false;
+  }
+}
+
+// Self-Management (statt externem Scheduler — Coolify Scheduled Tasks erforderten Sonderzugriff):
+// die App hält die Subscription selbst am Leben und betreibt das Delta-Poll-Sicherheitsnetz selbst.
+let _reconciling = false;
+async function reconcileSelf() {
+  if (_reconciling) return false;
+  _reconciling = true;
+  try {
+    const { root } = await resolveRoot(navClient());
+    if (!root) return false;
+    const { reconcileSubscription } = await import("../../../packages/graph-client/src/subscriptions.js");
+    const notificationUrl = `${APP_BASE_URL.replace(/\/$/, "")}/api/graph/webhook`;
+    const r = await reconcileSubscription({ client: navClient(), driveId: root.driveId, notificationUrl });
+    if (r.action !== "noop") console.log(`[subscription] ${r.action} · id=${r.id} · gültig bis ${r.expiration}`);
+    return true; // gültige Subscription bestätigt (created/renewed/recreated/noop)
+  } catch (e) {
+    console.error("[subscription] reconcile:", e.status ?? "", e.message);
+    return false;
+  } finally {
+    _reconciling = false;
+  }
+}
+
+// Startup-Self-Heal: mehrere Versuche mit Backoff, falls der erste Reconcile scheitert (Webhook-Route
+// beim Boot evtl. noch nicht durchgeroutet / Graph transient). Stoppt beim ersten Erfolg.
+async function startupReconcile() {
+  for (const ms of [8000, 30000, 120000, 300000]) {
+    await new Promise((r) => setTimeout(r, ms));
+    if (await reconcileSelf()) return;
+  }
+}
+
+// Unabhängiger Delta-Poll (Sicherheitsnetz): nimmt das Lease (claimSubscriptionForSync) → schließt sich
+// mit dem Webhook-Pfad gegenseitig aus. Existiert KEINE Subscription-Zeile, bootstrappt es selbst (Self-Heal).
+async function pollOnce() {
+  try {
+    const { root } = await resolveRoot(navClient());
+    if (!root) return;
+    const claimed = await claimSubscriptionForSync(root.driveId);
+    if (!claimed) {
+      // Kein Lease: entweder Webhook synct gerade (dann nichts tun) ODER es gibt gar keine Zeile → (re)bootstrappen.
+      const existing = await loadSubscriptionByDrive(root.driveId).catch(() => null);
+      if (!existing) await reconcileSelf();
+      return;
+    }
+    try {
+      const r = await deltaThenRewalkAndSave({
+        client: navClient(), driveId: root.driveId, rootItemId: root.itemId, rootName: root.name,
+        subscriptionId: claimed.id, prevToken: claimed.delta_token,
+      });
+      if (r.changed) console.log(`[poll] ${r.items} Änderung(en), ${r.affected.length} Datenraum/-räume markiert`);
+    } finally {
+      await finishProcessing(claimed.id, { lastSyncAt: new Date() });
+    }
+  } catch (e) {
+    console.error("[poll]:", e.status ?? "", e.message);
   }
 }
 
@@ -592,9 +650,21 @@ app.get("/api/write/audit", requireAuth, async (req, res) => {
 
 // Fallback-Tick: holt dirty-Subscriptions nach, falls ein setImmediate beim Neustart verloren ging
 // (Webhook-Notification kam, Verarbeitung nicht). Idempotent + single-flight; no-op ohne dirty-Zeilen.
-// Der eigentliche Korrektheits-Backstop ist der separate Delta-Poll (Coolify Task 'graph:sync').
 if (process.env.DATABASE_URL) {
   setInterval(() => { processDirtyOnce().catch(() => {}); }, 60_000).unref();
+}
+
+// Self-Management: die App hält Realtime ohne externen Scheduler am Leben.
+//  · Startup: Subscription sicherstellen, mit Retry-Backoff (self-bootstrap/-heal).
+//  · alle 30 min: Renewal-/Heil-Check (reconcileSubscription renewt erst nahe Ablauf — sonst billiger no-op).
+//  · alle 20 min: unabhängiger Delta-Poll (Sicherheitsnetz; bootstrappt bei fehlender Subscription selbst).
+// Gate: volle Graph-Config (navClient braucht TENANT+CLIENT+SECRET) — kein halb-armer Zustand mit Log-Rauschen.
+let _graphReady = false;
+try { graphConfigFromEnv(); _graphReady = true; } catch {}
+if (process.env.DATABASE_URL && _graphReady) {
+  startupReconcile();
+  setInterval(() => { reconcileSelf(); }, 30 * 60 * 1000).unref();
+  setInterval(() => { pollOnce(); }, 20 * 60 * 1000).unref();
 }
 
 app.listen(PORT, () =>

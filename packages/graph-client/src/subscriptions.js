@@ -27,10 +27,18 @@ export async function reconcileSubscription({ client, driveId, notificationUrl }
   const create = async (carryDeltaToken = null) => {
     const clientState = randomBytes(32).toString("base64url");
     const expirationDateTime = expISO(LIFETIME_MIN);
+    // Delta-Token VOR createSubscription snapshotten (falls keiner übernommen wird): so liegt der
+    // Baseline-Token zeitlich VOR dem Aktivwerden der Subscription → eine Änderung im Anlege-Fenster
+    // erscheint im NÄCHSTEN inkrementellen Delta (Re-Walk + Stale-Mark) statt im Baseline zu verpuffen.
+    let deltaToken = carryDeltaToken;
+    if (!deltaToken) {
+      try { deltaToken = (await client.driveDelta(driveId, "latest")).deltaToken; }
+      catch (e) { console.warn("[subscription] Delta-Token-Bootstrap fehlgeschlagen:", e.message); }
+    }
     const sub = await client.createSubscription({ resource, notificationUrl, clientState, expirationDateTime, changeType: "updated" });
     await saveSubscription({
       id: sub.id, kind: "drive", resource, driveId, notificationUrl, clientState,
-      expiration: sub.expirationDateTime || expirationDateTime, deltaToken: carryDeltaToken,
+      expiration: sub.expirationDateTime || expirationDateTime, deltaToken,
     });
     return { id: sub.id, expiration: sub.expirationDateTime || expirationDateTime };
   };
