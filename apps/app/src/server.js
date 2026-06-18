@@ -10,9 +10,11 @@ import crypto from "node:crypto";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { extractDataRooms, summarizeDataRooms } from "../../../packages/graph-client/src/datarooms.js";
+import { extractDataRooms, summarizeDataRooms, isDataRoomName } from "../../../packages/graph-client/src/datarooms.js";
 import { createGraphClient, graphConfigFromEnv } from "../../../packages/graph-client/src/index.js";
 import { loadLatestIndex, loadAnalyses, logWrite, loadWriteAudit, pingDb } from "../../../packages/graph-client/src/index-store.js";
+import { resolveRoot, safeRelSegments } from "../../../packages/graph-client/src/workspace.js";
+import { resolveCapability, serializeCapability } from "../../../packages/graph-client/src/structure.js";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dir, "../../..");
@@ -76,8 +78,47 @@ function rateLimiter({ windowMs, max }) {
 const keyOf = (req) => req.session?.user?.sub || req.ip || "anon";
 const analyzeBudget = rateLimiter({ windowMs: 5 * 60 * 1000, max: 30 });
 const writeBudget = rateLimiter({ windowMs: 5 * 60 * 1000, max: 40 });
+const navBudget = rateLimiter({ windowMs: 60 * 1000, max: 60 }); // Live-Navigation = Graph-Call-Verstärker
 const limit = (budget, msg) => (req, res, next) =>
   budget(keyOf(req)) ? next() : res.status(429).json({ error: msg });
+
+// ---------- Workspace-Navigation (spiegelt die SharePoint-Struktur, CLAUDE.md §1) ----------
+// Read-only Graph-Client (Singleton, Token wird intern gecacht). Schreiben läuft NIE hierüber,
+// sondern ausschließlich über /api/write/* (graphFor + Guardrails).
+let _navClient = null;
+function navClient() {
+  if (!_navClient) _navClient = createGraphClient(graphConfigFromEnv());
+  return _navClient;
+}
+
+// Kurzlebiger (Driveelter,Name)->Kind-Cache, damit tiefe Navigation nicht bei JEDEM Klick die
+// gesamte Vorfahrenkette neu auflistet (N+1-Verstärker). 45s Staleness ist für Live-Nav ok;
+// Miss fällt auf einen echten childByName-Call zurück.
+const CHILD_TTL_MS = 45 * 1000;
+const _childCache = new Map(); // key `${driveId}|${parentId}|${name}` -> { node, at }
+async function cachedChild(client, driveId, parentId, name) {
+  const key = `${driveId}|${parentId}|${name}`;
+  const hit = _childCache.get(key);
+  if (hit && Date.now() - hit.at < CHILD_TTL_MS) return hit.node;
+  const node = await client.childByName(driveId, parentId, name);
+  _childCache.set(key, { node, at: Date.now() });
+  if (_childCache.size > 5000) _childCache.clear(); // simpler Backstop gegen unbegrenztes Wachstum
+  return node;
+}
+
+// Id-basierter Abstieg von der Wurzel entlang der Pfad-Segmente. Containment by construction:
+// es werden NUR Kinder eines bereits aufgelösten Elterns akzeptiert — driveId bleibt server-fix,
+// kein client-geliefertes itemId wird je blind gelistet (Schutz gegen Ausbruch aus dem Workspace).
+async function descend(client, root, segments) {
+  let cur = { id: root.itemId, name: root.name, webUrl: root.webUrl, folder: {} };
+  for (const seg of segments) {
+    const next = await cachedChild(client, root.driveId, cur.id, seg);
+    if (!next) { const e = new Error(`Pfad nicht (mehr) vorhanden: "${seg}".`); e.status = 404; throw e; }
+    if (!next.folder) { const e = new Error(`"${seg}" ist kein Ordner.`); e.status = 400; throw e; }
+    cur = next;
+  }
+  return cur;
+}
 
 // ---------- OIDC (Authorization-Code + PKCE) ----------
 app.get("/login", (req, res) => {
@@ -211,6 +252,48 @@ async function analyzeHandler(req, res) {
   const bySecret = safeEqual(req.get("x-analyze-token"), ANALYZE_TRIGGER_SECRET);
   const bySession = req.session && req.session.user;
   if (!bySecret && !bySession) return res.status(403).json({ error: "forbidden" });
+  // CSRF: der kostenpflichtige (Claude-Spend) Session-Pfad darf NICHT per GET laufen — ein
+  // SameSite=lax-Cookie würde bei Cross-Site-GET-Navigation mitfahren. GET nur mit Header-Secret
+  // (cron/curl; Custom-Header ist cross-site nicht setzbar → CSRF-sicher).
+  if (req.method === "GET" && !bySecret) return res.status(405).json({ error: "Analyse bitte per POST aufrufen." });
+
+  // LIVE-Analyse: Datenraum direkt aus der Graph-Struktur bauen (kein gecachter Index nötig) —
+  // so erreichbar für neue/umbenannte Datenräume. room.path == cached dataroom_key (gleicher Key).
+  if (req.query.live === "1") {
+    if (!bySession) return res.status(403).json({ error: "Live-Analyse nur eingeloggt." });
+    let segments;
+    try { segments = safeRelSegments(req.query.path); }
+    catch (e) { return res.status(400).json({ error: e.message }); }
+    if (!segments.length) return res.status(400).json({ error: "Live-Analyse braucht ?path=<Datenraum>." });
+    try {
+      const client = navClient();
+      const { root, reason } = await resolveRoot(client);
+      if (!root) return res.status(503).json({ error: reason || "Workspace-Wurzel nicht auflösbar." });
+      const target = await descend(client, root, segments);
+      // Analysierbarkeit prüfen (gleiche Logik wie /api/fs): nur Positionen mit live-room-Strategie
+      // (Datenraum per Name/Struktur ODER einzelnes Projekt) — nicht beliebige Ordner, und NICHT
+      // der nackte Projekte-/Container-Wurzelordner (sonst Aggregat-Score über alle Projekte).
+      const kids = await client.listChildren(root.driveId, target.id);
+      const childFolderNames = kids.filter((k) => k.folder).map((k) => k.name);
+      const cap = resolveCapability({
+        relPath: segments.join("/"), name: target.name, segments, depth: segments.length, isRoot: false, childFolderNames,
+      });
+      if (cap.analysis?.strategy !== "live-room")
+        return res.status(400).json({ error: "An dieser Position ist keine KI-Analyse vorgesehen (kein Datenraum/Projekt)." });
+      if (cap.id === "projects" && segments.length <= 1)
+        return res.status(400).json({ error: "Bitte ein einzelnes Projekt wählen, nicht den gesamten Projekte-Ordner." });
+      const { buildLiveRoom } = await import("../../../packages/graph-client/src/live-room.js");
+      const { analyzeLiveRoom } = await import("./analyze.js");
+      const room = await buildLiveRoom(client, {
+        driveId: root.driveId, itemId: target.id, relPath: segments.join("/"),
+        rootName: root.name, name: target.name, owner: root.owner,
+      });
+      return res.json(await analyzeLiveRoom(room));
+    } catch (e) {
+      return res.status(e.status || 502).json({ error: e.body ?? e.message });
+    }
+  }
+
   const { analyzeOne, analyzeProject, analyzeMissing } = await import("./analyze.js");
   const force = req.query.force === "1";
   if (req.query.path) return res.json(await analyzeOne(String(req.query.path)));
@@ -220,6 +303,91 @@ async function analyzeHandler(req, res) {
 }
 app.get("/api/datarooms/analyze", limit(analyzeBudget, "Zu viele Analyse-Anfragen — kurz warten."), analyzeHandler);
 app.post("/api/datarooms/analyze", limit(analyzeBudget, "Zu viele Analyse-Anfragen — kurz warten."), analyzeHandler);
+
+// GET /api/workspace — die FIXE Wurzel + ihre Top-Level-Kinder als Sidebar-Sektionen.
+// Einmal beim Boot der Shell. Degradiert (200 + root:null + candidates) statt zu crashen,
+// wenn die Wurzel nicht auflösbar ist — die UI zeigt dann einen Konfig-Hinweis.
+app.get("/api/workspace", requireAuth, async (req, res) => {
+  let client;
+  try { client = navClient(); }
+  catch (e) { return res.status(503).json({ error: `Graph nicht konfiguriert: ${e.message}` }); }
+  try {
+    const { root, reason, candidates } = await resolveRoot(client, { force: req.query.refresh === "1" });
+    if (!root) return res.json({ root: null, reason, candidates: candidates ?? [] });
+    const kids = await client.listChildren(root.driveId, root.itemId);
+    const nav = kids
+      .filter((k) => k.folder)
+      .map((k) => {
+        // Sidebar-Capability namensbasiert (Signal A reicht hier; die ≥3-Kinder-Erkennung
+        // für verschachtelte Datenräume passiert erst beim Navigieren in /api/fs).
+        const ctx = { relPath: k.name, name: k.name, segments: [k.name], depth: 1, isRoot: false, childFolderNames: [] };
+        const cap = serializeCapability(resolveCapability(ctx), { writeEnabled: GRAPH_WRITE_ENABLED });
+        return { name: k.name, path: k.name, type: "folder", itemId: k.id, webUrl: k.webUrl ?? null, childCount: k.folder?.childCount ?? null, capability: cap };
+      })
+      .sort((a, b) => a.name.localeCompare(b.name, "de"));
+    res.json({
+      root: { name: root.name, driveId: root.driveId, itemId: root.itemId, webUrl: root.webUrl, owner: root.owner, ownerUpn: root.ownerUpn },
+      nav,
+      writeEnabled: GRAPH_WRITE_ENABLED,
+      cachedAt: root.resolvedAt,
+    });
+  } catch (e) {
+    res.status(e.status || 502).json({ error: e.body ?? e.message });
+  }
+});
+
+// GET /api/fs?path=<rel> — Live-Navigation EINER Ebene (spiegelt SharePoint), id-basiert.
+// Liefert Kinder + Breadcrumb + die ortsabhängige Capability (View + Aktionen).
+app.get("/api/fs", requireAuth, limit(navBudget, "Zu viele Navigations-Anfragen — kurz warten."), async (req, res) => {
+  let client, segments;
+  try { client = navClient(); }
+  catch (e) { return res.status(503).json({ error: `Graph nicht konfiguriert: ${e.message}` }); }
+  try { segments = safeRelSegments(req.query.path); }
+  catch (e) { return res.status(400).json({ error: e.message }); }
+  try {
+    const { root, reason } = await resolveRoot(client);
+    if (!root) return res.status(503).json({ error: reason || "Workspace-Wurzel nicht auflösbar." });
+    const isRoot = segments.length === 0;
+    const target = await descend(client, root, segments);
+    const kids = await client.listChildren(root.driveId, target.id);
+    const childFolderNames = kids.filter((k) => k.folder).map((k) => k.name);
+    const relPath = segments.join("/");
+    const ctx = { relPath, name: isRoot ? root.name : target.name, segments, depth: segments.length, isRoot, childFolderNames };
+    const cap = serializeCapability(resolveCapability(ctx), { writeEnabled: GRAPH_WRITE_ENABLED });
+    const breadcrumb = [{ name: root.name, path: "" }];
+    for (let i = 0; i < segments.length; i++) breadcrumb.push({ name: segments[i], path: segments.slice(0, i + 1).join("/") });
+    const children = kids
+      .map((k) => ({
+        name: k.name,
+        path: [...segments, k.name].join("/"),
+        type: k.folder ? "folder" : "file",
+        itemId: k.id,
+        webUrl: k.webUrl ?? null,
+        size: k.size ?? 0,
+        childCount: k.folder?.childCount ?? null,
+        modified: k.lastModifiedDateTime ?? null,
+        ext: k.file ? (k.name.includes(".") ? k.name.split(".").pop().toLowerCase() : "") : null,
+        // Inline-Analyse-Button nur an Ordnern, die schon am Namen als Datenraum erkennbar sind
+        // (Struktur-Signal bräuchte einen Extra-Graph-Call pro Kind). Struktur-Datenräume bleiben
+        // über die Datenraum-View beim Reinnavigieren analysierbar.
+        analyzable: k.folder ? isDataRoomName(k.name) : false,
+      }))
+      .sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name, "de") : a.type === "folder" ? -1 : 1));
+    res.json({
+      path: relPath,
+      parentPath: isRoot ? null : segments.slice(0, -1).join("/"),
+      capability: cap,
+      breadcrumb,
+      self: { name: isRoot ? root.name : target.name, itemId: target.id, webUrl: isRoot ? root.webUrl : target.webUrl ?? null, driveId: root.driveId },
+      // dataroom_key (== gecachter Analyse-Schlüssel), nur an Datenraum-Positionen.
+      indexPath: cap.id === "dataroom" ? `/${root.name}/${relPath}`.replace(/\/+$/, "") : null,
+      children,
+      source: "live",
+    });
+  } catch (e) {
+    res.status(e.status || 502).json({ error: e.body ?? e.message });
+  }
+});
 
 // =====================================================================
 // SCHREIBEN nach SharePoint / Outlook  —  /api/write/*

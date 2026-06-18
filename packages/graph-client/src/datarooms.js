@@ -22,7 +22,7 @@ export const STANDARD_CATEGORIES = [
   { num: "16", label: "Risiken und QnA" },
 ];
 
-const isDataRoomName = (name) =>
+export const isDataRoomName = (name) =>
   /(^|[_\s-])datenraum/i.test(name) || /^dr[-_]asset/i.test(name);
 
 function flattenFolders(nodes, prefix, out) {
@@ -35,7 +35,7 @@ function flattenFolders(nodes, prefix, out) {
   return out;
 }
 
-function statsOf(node, acc) {
+export function statsOf(node, acc) {
   acc ||= { files: 0, folders: 0, bytes: 0, modified: null, types: {} };
   for (const c of node.children ?? []) {
     if (c.type === "folder") { acc.folders++; statsOf(c, acc); }
@@ -50,7 +50,7 @@ function statsOf(node, acc) {
   return acc;
 }
 
-function categoryStatus(rootNode) {
+export function categoryStatus(rootNode) {
   const folders = flattenFolders(rootNode.children ?? [], "", []);
   return STANDARD_CATEGORIES.map((cat) => {
     const hit = folders.find((f) => new RegExp(`^${cat.num}[ _\\-]`).test(f.name));
@@ -58,7 +58,7 @@ function categoryStatus(rootNode) {
   });
 }
 
-function statusOf(path) {
+export function statusOf(path) {
   if (/xx_dropped|\/dropped(\/|$)/i.test(path)) return "Dropped";
   if (/pipeline/i.test(path)) return "Pipeline";
   if (/beispiel|vorlage/i.test(path)) return "Vorlage";

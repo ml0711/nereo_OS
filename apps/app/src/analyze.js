@@ -115,6 +115,24 @@ ${cats}`;
   };
 }
 
+/** Analysiert einen LIVE aus der Graph-Struktur gebauten Datenraum (buildLiveRoom).
+ *  room.path ist drive-relativ == cached dataroom_key → die Analyse landet unter demselben
+ *  Schlüssel wie der index-basierte Pfad. analyzeDataRoom + saveAnalysis bleiben unverändert. */
+export async function analyzeLiveRoom(room) {
+  try {
+    const a = await analyzeDataRoom(room);
+    await saveAnalysis(room, a);
+    // result = portfolio-kompatibles room-Objekt inkl. Analyse → Frontend kann es direkt
+    // mit cardHtml(result) rendern (gleiche Form wie /api/datarooms rooms[]).
+    return {
+      analyzed: 1, failed: 0, room: room.name, project: room.project,
+      score: a.completeness_score, tokens: a.usage, result: { ...room, analysis: a },
+    };
+  } catch (e) {
+    return { analyzed: 0, failed: 1, room: room.name, error: e.message };
+  }
+}
+
 /** Analysiert alle (oder nur noch nicht analysierten) Datenräume und speichert sie in der DB. */
 export async function analyzeMissing({ force = false } = {}) {
   const index = await loadLatestIndex();

@@ -60,6 +60,14 @@ Alle Services liegen in **einem Monorepo**, sauber getrennt. Auf Coolify ergeben
 - **SharePoint-Sync:** liest Ordnerstrukturen und Dokumente **on demand**, hält keine Dauerkopie; speichert nur Links/Referenzen + abgeleitete Metadaten. Schreiben (Datei/Ordner/Metadaten) geht direkt in SharePoint zurück, nie in einen Zweitspeicher.
 - **Write-Schicht:** `packages/graph-client/src/index.js` → `mutate()` + Helfer (`uploadFile`, `replaceFile`, `deleteItem`, `createFolder`, `renameItem`, `moveItem`, `updateListItemFields`, `setDriveItemFields`, `sendMail`). HTTP-Endpoints: `apps/app/src/server.js` unter `/api/write/*`. Audit: `graph_write_audit` (App-Postgres).
 
+### Workspace-Navigation — „Business as Code" (im `app`-Service)
+Die App **spiegelt die SharePoint-Struktur** ab einer **fixen Wurzel** wider und ist der Ausgangspunkt von allem.
+
+- **Fixe Wurzel:** standardmäßig der Ordner **„nereo Development Partners"** (OneDrive `kienle@nereo.ch`). Aufgelöst in `packages/graph-client/src/workspace.js` → `resolveRoot()`: ENV-Pin (`WORKSPACE_ROOT_DRIVE_ID`+`WORKSPACE_ROOT_ITEM_ID`) bevorzugt, sonst Bootstrap über `WORKSPACE_ROOT_UPN`+`WORKSPACE_ROOT_FOLDER`, mit diagnostischer Degradation (Kandidaten statt Crash). *Die Wurzel ist NICHT der Drive-Root* — sonst wäre der private OneDrive sichtbar. Umzug (anderer Ordner / später SharePoint-Site) = reine ENV-Änderung.
+- **Live-Spiegelung:** Navigation läuft **live** über Graph (nicht aus dem gecachten Index), damit neue/umbenannte Ordner sofort erscheinen. Endpoints: `GET /api/workspace` (Wurzel + Sidebar-Sektionen), `GET /api/fs?path=<rel>` (Kinder einer Ebene + Breadcrumb + Capability). **id-basierter Abstieg** (`descend` via `childByName`) statt Pfad-Adressierung → Containment (kein Ausbruch aus dem Workspace, `driveId` server-fix) und sonderzeichen-immun.
+- **Ordner→Funktion (`packages/graph-client/src/structure.js`):** deklarative `CAPABILITIES[]` (erste-Match-gewinnt): `workspace-root` → `dataroom`(per Name) → `projects` → `company` → `dataroom`(per Struktur) → `folder`. Je Capability eine andere View + Aktionen. Datenraum-Analyse dockt live an: `live-room.js` → `buildLiveRoom()` baut on-demand ein `room`-Objekt, dessen `path` exakt dem gecachten `dataroom_key` entspricht (Live- und Cache-Analyse teilen den Schlüssel).
+- **Schreiben bleibt getrennt:** die Nav ist read-only; „Ordner/Datei erstellen" ist als Capability-Aktion sichtbar, aber **für später** (deaktiviert). Schreiben läuft ausschließlich über `/api/write/*` mit den Guardrails aus §2.
+
 ### KI-Agenten (im `app`-Service)
 Definierte, eng umrissene Tasks — kein „KI auf alles":
 - **Was fehlt noch?** (Vollständigkeit eines Datenraums)

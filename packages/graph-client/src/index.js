@@ -225,7 +225,10 @@ export function createGraphClient(cfg, opts = {}) {
             // webUrl nur für Ordner speichern (Quellen-Link zum Datenraum); hält den Index schlank.
             ...(k.folder ? { webUrl: k.webUrl } : {}),
           };
-          if (k.folder && k.folder.childCount > 0 && depth < maxDepth) {
+          // childCount nur als Optimierung: bei GENAU 0 (sicher leer) sparen wir den Call.
+          // Fehlt childCount (undefined/null bei manchen Item-Typen) oder ist >0 → absteigen,
+          // sonst gingen ganze Teilbäume still verloren (falsche Datei-/Kategorie-Zählung).
+          if (k.folder && depth < maxDepth && k.folder.childCount !== 0) {
             node.children = await visit(k.id, depth + 1);
           }
           nodes.push(node);
@@ -244,7 +247,39 @@ export function createGraphClient(cfg, opts = {}) {
 
     // --- Suche ---
     searchDrive: (driveId, q) =>
-      getAll(`/drives/${driveId}/root/search(q='${encodeURIComponent(q)}')?$top=200`),
+      // OData-Stringliteral: ' verdoppeln (sonst bricht ein Apostroph die Query / 400), dann URL-encoden.
+      getAll(`/drives/${driveId}/root/search(q='${encodeURIComponent(String(q).replace(/'/g, "''"))}')?$top=200`),
+
+    // --- Navigation (für die Workspace-Shell, CLAUDE.md §1: Struktur spiegeln) ---
+    /** Item per relativem Pfad (Pfad-Adressierung). NUR für Bootstrap-Root-Auflösung —
+     *  laufende Navigation läuft id-basiert (childByName), das ist sonderzeichen-immun.
+     *  Pfadsegmente einzeln encodeURIComponent, ':' bleibt roher Delimiter; leerer Pfad → /root. */
+    itemByPath(driveId, relPath = "") {
+      const SEL = "id,name,size,folder,file,webUrl,lastModifiedDateTime,parentReference";
+      const enc = String(relPath).split("/").filter(Boolean).map(encodeURIComponent).join("/");
+      return request(
+        enc
+          ? `/drives/${driveId}/root:/${enc}?$select=${SEL}`
+          : `/drives/${driveId}/root?$select=${SEL}`
+      );
+    },
+    /** Ein direktes Kind eines bekannten Ordners per EXAKTEM Namen — id-basiert.
+     *  Containment by construction: es werden nur Kinder eines bereits aufgelösten
+     *  Elterns betrachtet. null, wenn nicht (mehr) vorhanden. */
+    async childByName(driveId, parentItemId, name) {
+      const kids = await getAll(
+        `/drives/${driveId}/items/${parentItemId}/children` +
+          `?$select=id,name,size,folder,file,webUrl,lastModifiedDateTime&$top=200`
+      );
+      // Exakt zuerst, dann case-insensitiv (SharePoint/OneDrive sind case-insensitive,
+      // case-preserving) — so überleben gespeicherte Pfade eine reine Groß-/Kleinschreib-Umbenennung.
+      const target = String(name);
+      return (
+        kids.find((k) => k.name === target) ??
+        kids.find((k) => k.name.localeCompare(target, undefined, { sensitivity: "accent" }) === 0) ??
+        null
+      );
+    },
 
     // ===================================================================
     // SCHREIBEN (Guardrails über mutate(): dryRun + Audit). Braucht in Azure
