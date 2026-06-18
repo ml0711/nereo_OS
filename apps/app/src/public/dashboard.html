@@ -4,6 +4,15 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>nereo OS</title>
+<script>
+  // Logout-Härtung: Nach dem Abmelden darf der Zurück-Button nicht die aus dem
+  // bfcache wiederhergestellte Dashboard-Ansicht zeigen (sieht aus wie "noch
+  // eingeloggt"). Bei Wiederherstellung aus dem Cache hart neu laden -> der
+  // Server antwortet dann mit Redirect auf /login, sobald die Session weg ist.
+  window.addEventListener("pageshow", function (e) {
+    if (e.persisted) window.location.reload();
+  });
+</script>
 <style>
   :root{
     --bg:#0b0d10; --bg2:#0f1216; --panel:#141a20; --panel2:#1b232c; --line:#222a33;
