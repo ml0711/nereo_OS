@@ -54,6 +54,11 @@ Alle Services liegen in **einem Monorepo**, sauber getrennt. Auf Coolify ergeben
 
 > Domain steht noch nicht fest; `nereo.ch` bevorzugt.
 
+### Auth / Session (im `app`-Service)
+Die App ist ihr **eigener OIDC-Client** (Auth-Code + PKCE gegen LogTo) und hält eine **eigene Cookie-Session** (`nereo_app`, 7 Tage). Gegated wird rein über diese Session; LogTo wird nur bei `/login` befragt.
+- **Logout muss BEIDES beenden:** (1) App-Session leeren (`req.session = null`) **und** (2) die LogTo-SSO-Session über `/oidc/session/end` **mit `id_token_hint`** (das `id_token` wird dafür beim Callback in der Session abgelegt) — sonst authentifiziert der nächste `/login` still durch.
+- **Gegatete Antworten sind `Cache-Control: no-store`**, das Dashboard hat zusätzlich einen **bfcache-Guard** (`pageshow`+`persisted` → reload). Sonst zeigt der **Zurück-Button** nach dem Logout die gecachte Seite → wirkt fälschlich „noch eingeloggt" (realer Bug, 2026-06-18 behoben).
+
 ### Integrationen
 - **Microsoft Graph** (nicht „Outlook API"): einheitliche API für SharePoint/Drive **und** Outlook/Mail. Lesen + **abgesichertes Schreiben** (siehe Guardrails §2). Azure-App `nereo_os` braucht dafür `Sites.ReadWrite.All` + `Mail.Send` (Application-Permission, Admin-Consent).
 - **Starke Outlook-Integration:** Mail-Kontext lesen und mit Projekten/Datenräumen verknüpfen — und **Mail senden** fürs automatische Nachhaken (`Mail.Send`).
@@ -90,6 +95,8 @@ Die App schreibt ihre eigenen Daten — Analyse-Ergebnisse, Dokument-Index, Stat
 - **4 Deployments auf Coolify:** `landing`, `app`, `auth` (LogTo), `db` (Postgres).
 - Reverse Proxy / TLS über Coolify (Traefik).
 - **DB-Backups** über Coolify einrichten (LogTo-DB = Identitätsspeicher, kritisch).
+- **Deploy-Branch = `main`** (GitHub-App-Quelle `ml0711/nereo_OS`); `app` + `landing` bauen via Dockerfile, Healthcheck auf `/healthz` — durchgefallener Build ⇒ alter Container bleibt aktiv (Prod-Schutz).
+- **Auto-Deploy läuft VPS-seitig, NICHT über GitHub** (Entscheidung 2026-06-18): Der GitHub-App-Webhook feuert nicht und ist nicht reparierbar (bei GitHub-App-Quellen kein Coolify-Auto-Deploy-Toggle, kein Zugang zum Kunden-GitHub). Ersatz: **cron (1×/Min) → `/home/deploy/nereo-autodeploy.sh`** beobachtet `origin/main` und stößt bei neuer SHA den Coolify-Deploy-API-Call für `app`+`landing` an (Token + State unter `~/.config/nereo-autodeploy/`). ⇒ **Jeder Push auf `main` deployt automatisch (~1 Min Verzögerung).**
 
 ### Vorgeschlagene Repo-Struktur
 ```
