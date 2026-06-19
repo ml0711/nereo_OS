@@ -119,3 +119,25 @@ CLAUDE.md
 3. **Outlook-Scope (ENTSCHIEDEN):** Mail-Versand fürs Nachhaken aktiv → `Mail.Send`. Endpoint `/api/write/mail`. *(Mail-Kontext lesen + an Projekte/Datenräume knüpfen = Realtime-Phase 2, Wiederverwendung der Webhook-Infra — noch offen.)*
 4. **Datenresidenz CH/EU** vor institutionellem Go-Live (zurückgestellt, siehe §2). App-DB ist bereits self-hosted auf dem VPS; vor Go-Live VPS-Standort + KI-Inferenz CH/EU prüfen.
 5. **Workspace-Wurzel hängt an einer Einzelperson:** die Default-Wurzel „nereo Development Partners" liegt im OneDrive von `kienle@nereo.ch`. Verlässt er die Firma / zieht der OneDrive um → Wurzel + Realtime weg. Vor breiterem Rollout auf eine geteilte **SharePoint-Site/Bibliothek** umziehen — reine ENV-Änderung (`WORKSPACE_ROOT_*`).
+
+---
+
+## 6. Zugänge & Betriebs-Realität (verifiziert 2026-06-19)
+
+**Single Source of Truth für Secrets = Coolify-Env je Deployment** (nicht das Repo-`.env` — das ist veraltet/leer). **Niemals Secret-Werte in CLAUDE.md, Memory oder Git** — hier stehen nur Pfade, IDs, Endpoints und der „eingerichtet/offen"-Status. Alle Zugangs-Artefakte liegen **host-lokal beim `deploy`-User auf dem VPS** und laufen über die Coolify-API (kein Docker-Exec: `deploy` hat **keinen** `docker.sock`-Zugriff).
+
+| Zugang | Stand | Wo / wie |
+|---|---|---|
+| **GitHub** (Code → Deploy) | ✅ **Lesen + Schreiben** verifiziert (Test-Branch angelegt+gelöscht) | Repo `git@github.com:ml0711/nereo_OS.git`. Push-Key `~/.ssh/nereo_os_deploy` (in `git config core.sshCommand` gepinnt, `IdentitiesOnly`). **Push auf `main` ⇒ Auto-Deploy** via cron `~/nereo-autodeploy.sh` (~1 Min, siehe §4). Andere Branches deployen NICHT. |
+| **Coolify** (Portal/Hosting) | ✅ **Voller Lese- + Deploy-Zugriff** verifiziert | API `http://localhost:8000/api/v1`, Token `~/.config/nereo-autodeploy/token`. Sichtbar/steuerbar: `app` (`o1dz93isw83ae51mh1fpj8s6`), `landing` (`x10xk0bm4dnddktdih5xil8z`), Service `auth`=LogTo (`jr743dc325bta845bftmfn30`), DB `app-db` (`ti9et3csd11h45pmuqz7dxy9`). Token ist aktions-fähig (löst Deploys aus); **Env-Schreiben** über die API gehört zum selben Token, wurde aber bewusst **nicht** an Prod getestet. |
+| **LogTo** (Auth) | ⚠️ **Login aktiv · Management-API-App existiert, aber Secret fehlt mir** | OIDC-Login läuft (`https://auth.nereo-os.de`, App = OIDC-Client: `LOGTO_APP_ID`/`LOGTO_APP_SECRET` in Coolify-`app`-Env). Admin-Konsole: `LOGTO_ADMIN_ENDPOINT` (in `auth`-Service-Env). **Die Management-API-M2M-App existiert bereits** (`coolify-automation`, App ID `s513vu2wm3fjdhmd0lq8x`, Rolle „Logto Management API access") — **aber ihr Secret liegt beim User, nicht in Coolify/bei Claude.** ⇒ **Claude kann derzeit KEINE User per API anlegen**; User-Verwaltung geht nur in der Admin-Konsole. Aktivieren: Secret hinterlegen (oder in der Admin-Konsole neu generieren) und als Coolify-`app`-Env setzen → Token via `POST /oidc/token` (Basic appId:secret, `grant_type=client_credentials`, `resource=https://default.logto.app/api`, `scope=all`) → `https://auth.nereo-os.de/api/...`. Bestand: 1 User `Letzgus` (`kcynpd2bl61r`), Self-Registration AUS. LogTo-DB-Creds in `auth`-Service-Env (DB `logto`), nur im Docker-Netz erreichbar. |
+| **Microsoft Graph** | ✅ Lesen · ⚠️ Schreiben offen | App `nereo_os` (`MS_TENANT_ID`/`MS_CLIENT_ID`/`MS_CLIENT_SECRET` in Coolify-`app`-Env). Read + Change-Notifications laufen. Schreiben (`Sites.ReadWrite.All` + `Mail.Send`) **wartet auf Azure-Admin-Consent** → 403 (§5.2). Zusätzlich Kill-Switch `GRAPH_WRITE_ENABLED=0` ⇒ `/healthz.write=false`. |
+| **App-DB** (`nereo_app`) | ✅ Creds bekannt · nur intern erreichbar | `DATABASE_URL` in Coolify-`app`-Env. Interner Coolify-Hostname ⇒ **nur im Docker-Netz / in-Container** erreichbar, NICHT vom VPS-Host (siehe §3 Betriebsregel). |
+| **App-eigene KI** (`ANTHROPIC_API_KEY`) | ❌ **LEER in Prod** → In-App-Analyse wirft | `apps/app/src/analyze.js` braucht den Key zur Laufzeit; Coolify-`app`-Env-Wert ist leer ⇒ die KI-Agenten der App sind aktuell **nicht funktionsfähig**, bis ein Key gesetzt wird. **Getrennt** von „Claude Code", das diese App baut. |
+
+**Health-Probe:** `GET https://app.nereo-os.de/healthz` → `{status, db, write, sync:{expiration,lastSyncAt,dirty}}`. Stand 2026-06-19: alles `ok`, Realtime-Subscription lebt.
+
+### Offene Schalter, um „voll arbeitsfähig" zu werden (Entscheidung nötig)
+- **A — User per API anlegen:** Secret der bestehenden M2M-App `coolify-automation` bereitstellen / neu generieren und als Coolify-`app`-Env hinterlegen (s. o.). Dann kann Claude User vollständig verwalten.
+- **B — App-KI scharf schalten:** `ANTHROPIC_API_KEY` in Coolify-`app`-Env setzen.
+- **C — Graph-Schreiben scharf schalten:** Azure-Admin-Consent (`Sites.ReadWrite.All` + `Mail.Send`) + `GRAPH_WRITE_ENABLED=1`.
