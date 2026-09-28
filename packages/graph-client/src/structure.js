@@ -23,8 +23,10 @@ const UPLOAD = { id: "upload", label: "Datei hochladen", kind: "write", write: "
 
 // Erkennung am AKTUELLEN Ordnernamen (c.name = wo man steht). Sonderzeichen-immun und
 // unabhängig vom Gesellschafts-Präfix im Pfad (die Ebene "Gesellschaft" liegt davor).
-const isProjectId = (name) => /^\d{4}-\d{3}[ _]/.test(name || ""); // JJJJ-NNN_Kuerzel_Stadt
-const isAnalysisId = (name) => /^A\d{2}[ _]/.test(name || ""); // A08_Nutzung_Varianten
+// Namens-Regeln aus der EINEN Stelle (naming.js) — nicht hier doppelt.
+import { isProjectFolder, analysisCodeOf } from "./naming.js";
+const isProjectId = (name) => isProjectFolder(name); // JJJJ-NNN_Kuerzel_Stadt
+const isAnalysisId = (name) => !!analysisCodeOf(name); // A08_Nutzung_Varianten
 const nameIs = (re) => (c) => re.test(c.name || "");
 
 /**

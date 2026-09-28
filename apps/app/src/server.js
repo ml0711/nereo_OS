@@ -16,6 +16,8 @@ import { loadLatestIndex, loadAnalyses, logWrite, loadWriteAudit, pingDb,
   loadSubscriptionById, loadSubscriptionByDrive, loadActiveSubscriptions, markDirty, claimDirtySubscription, claimSubscriptionForSync, finishProcessing } from "../../../packages/graph-client/src/index-store.js";
 import { resolveRoot, safeRelSegments, pickCompanies } from "../../../packages/graph-client/src/workspace.js";
 import { loadAnalysisCatalog, buildProjectStatus, listProjectsWithStatus } from "../../../packages/graph-client/src/projects.js";
+import { docDateFromName, loadDocTypes } from "../../../packages/graph-client/src/naming.js";
+import { buildSearchIndex, queryIndex, computeFacets } from "../../../packages/graph-client/src/search.js";
 import { resolveCapability, serializeCapability } from "../../../packages/graph-client/src/structure.js";
 import { deltaThenRewalkAndSave } from "../../../packages/graph-client/src/sync.js";
 
@@ -142,10 +144,49 @@ async function cachedListChildren(client, principal, driveId, itemId, { refresh 
   return entry;
 }
 
-// Dokumentdatum aus dem Dateinamen: führendes JJJJ-MM-TT (Konvention _KONVENTIONEN.md §5), sonst null.
-function docDateFromName(name) {
-  const m = /^(\d{4})-(\d{2})-(\d{2})(?=[_ .]|$)/.exec(name || "");
-  return m ? `${m[1]}-${m[2]}-${m[3]}` : null;
+// (docDateFromName kommt jetzt aus naming.js — der EINEN Stelle für Namens-Regeln.)
+
+// ---------- Such-Index (in-memory, kein neuer Dienst / keine DB, CLAUDE.md §3, Bauregel §1) ----------
+// Flache Datei-Liste über die eingestellten Gesellschaften, gebaut über das zentrale Microsoft-Tor
+// (walkDrive → Ausschlüsse zentral raus). Liegt NUR im Arbeitsspeicher: geht bei Neustart verloren
+// und wird neu gebaut (so gewünscht). Gültig ~10 Min; „Index neu aufbauen" (refresh) holt sofort frisch.
+// Schlüssel ist der `principalOf(req)` — HEUTE ein gemeinsamer „shared"-Eintrag (App-only, alle sehen
+// alles). SPÄTER (Login je Person, delegierter Token) genau wie beim _fsCache umstellen: principalOf →
+// user.sub UND navClient() → per-User-Client; dann filtert Microsoft selbst und der Index ist je Person
+// getrennt (Weg A). Alternativ Weg B: gemeinsamer Index, Treffer vor der Anzeige je Person gegenprüfen.
+// Diese Struktur verbaut keinen der beiden Wege (Aufgabe Punkt 2).
+const SEARCH_TTL_MS = 10 * 60 * 1000;
+const _searchIndex = new Map(); // principal -> { rows, facets, builtAt, building:Promise|null }
+
+async function buildSearchIndexNow(client) {
+  const { root, reason } = await resolveRoot(client);
+  if (!root) { const e = new Error(reason || "Workspace-Wurzel nicht auflösbar."); e.status = 503; throw e; }
+  const kids = await client.listChildren(root.driveId, root.itemId);
+  const companies = pickCompanies(kids); // Erlaubnisliste + Ausschlüsse (Bauregel §2/§3)
+  const [catalog, docTypes] = await Promise.all([loadAnalysisCatalog(client, root), loadDocTypes(client, root)]);
+  const rows = await buildSearchIndex(client, { driveId: root.driveId, companies, docTypes });
+  return { rows, facets: computeFacets(rows, catalog), builtAt: Date.now(), building: null };
+}
+
+// Liefert den (ggf. frisch gebauten) Index für eine Person. Single-Flight: läuft schon ein Aufbau,
+// teilen gleichzeitige Anfragen denselben (kein Doppel-Durchlauf durch die Ablage).
+async function getSearchIndex(client, principal, { refresh = false } = {}) {
+  const entry = _searchIndex.get(principal);
+  if (entry?.building) return entry.building; // Aufbau läuft → mitbenutzen (auch bei refresh: liefert frisch)
+  if (!refresh && entry && Date.now() - entry.builtAt < SEARCH_TTL_MS) return entry;
+  const building = buildSearchIndexNow(client);
+  _searchIndex.set(principal, { rows: entry?.rows || [], facets: entry?.facets || null, builtAt: entry?.builtAt || 0, building });
+  try {
+    const built = await building;
+    _searchIndex.set(principal, built);
+    if (_searchIndex.size > 200) { for (const k of _searchIndex.keys()) { if (k !== principal) _searchIndex.delete(k); } } // Backstop
+    return built;
+  } catch (e) {
+    // Fehlgeschlagen: building-Marke lösen, vorigen Stand (falls vorhanden) behalten.
+    const cur = _searchIndex.get(principal);
+    if (cur?.building === building) { if (entry?.builtAt) _searchIndex.set(principal, entry); else _searchIndex.delete(principal); }
+    throw e;
+  }
 }
 
 // Id-basierter Abstieg von der Wurzel entlang der Pfad-Segmente. Containment by construction:
@@ -482,17 +523,52 @@ const prepMain = (it) =>
 // die Logik lädt /datenraeume.js (holt /api/workspace + /api/fs?counts=1). Design nach Tokens,
 // Tabelle mit schwarzem Kopf. KEIN KI-Analyse-Knopf (eigener späterer Schritt).
 const DATENRAEUME_MAIN = `<div class="dr">
-  <div class="dr-top">
-    <label class="dr-field">Gesellschaft <select id="dr-company" aria-label="Gesellschaft wählen"></select></label>
-    <span class="dr-spacer"></span>
-    <span class="dr-stand" id="dr-stand">Stand: —</span>
-    <button class="btn ghost" id="dr-reload" type="button">↻ Neu laden</button>
+  <div class="dr-search">
+    <input id="dr-q" type="search" autocomplete="off" spellcheck="false"
+      placeholder="Dateien durchsuchen – Name oder Pfad (z. B. Teltow, Foerdermittel)" aria-label="Suche" />
+    <select id="dr-f-company" aria-label="Gesellschaft filtern"><option value="">Gesellschaft: alle</option></select>
+    <select id="dr-f-projekt" aria-label="Projekt filtern"><option value="">Projekt: alle</option></select>
+    <select id="dr-f-a" aria-label="A-Kennung filtern"><option value="">A-Kennung: alle</option></select>
+    <select id="dr-f-doctype" aria-label="Dokumenttyp filtern"><option value="">Dokumenttyp: alle</option></select>
+    <select id="dr-f-pattern" aria-label="Muster erkannt filtern">
+      <option value="">Muster: alle</option>
+      <option value="ja">nach Konvention benannt</option>
+      <option value="nein">nicht nach Konvention</option>
+    </select>
+    <button class="btn ghost" id="dr-search-clear" type="button" hidden>Zurücksetzen</button>
   </div>
-  <nav class="dr-crumbs" id="dr-crumbs" aria-label="Pfad"></nav>
-  <div id="dr-body"><div class="dr-note">Lädt …</div></div>
+  <div class="dr-idxbar">
+    <span id="dr-idx-stand">Index: wird beim ersten Suchen aufgebaut</span>
+    <span class="dr-spacer"></span>
+    <button class="btn ghost" id="dr-idx-reload" type="button">↻ Index neu aufbauen</button>
+  </div>
+
+  <div id="dr-browser">
+    <div class="dr-top">
+      <label class="dr-field">Gesellschaft <select id="dr-company" aria-label="Gesellschaft wählen"></select></label>
+      <span class="dr-spacer"></span>
+      <span class="dr-stand" id="dr-stand">Stand: —</span>
+      <button class="btn ghost" id="dr-reload" type="button">↻ Neu laden</button>
+    </div>
+    <nav class="dr-crumbs" id="dr-crumbs" aria-label="Pfad"></nav>
+    <div id="dr-body"><div class="dr-note">Lädt …</div></div>
+  </div>
+
+  <div id="dr-results" hidden></div>
 </div>
 <style>
-  .dr{max-width:1120px}
+  .dr{max-width:1180px}
+  .dr [hidden]{display:none!important}
+  /* Suche + Filter */
+  .dr-search{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px}
+  .dr-search input[type=search]{flex:1 1 260px;min-width:240px;font:inherit;color:var(--txt);background:#fff;
+    border:1px solid var(--line);border-radius:var(--r-card);padding:9px 13px}
+  .dr-search input[type=search]:focus{outline:none;border-color:#000}
+  .dr-search select{font:inherit;color:var(--txt);background:#fff;border:1px solid var(--line);
+    border-radius:var(--r-card);padding:8px 10px;cursor:pointer;max-width:230px}
+  .dr-search select:hover{border-color:#000}
+  .dr-idxbar{display:flex;align-items:center;gap:10px;margin-bottom:18px;font-size:12px;color:var(--mut2)}
+  /* Browser */
   .dr-top{display:flex;align-items:center;gap:14px;margin-bottom:14px;flex-wrap:wrap}
   .dr-field{display:flex;align-items:center;gap:9px;font-size:12px;color:var(--mut);text-transform:uppercase;letter-spacing:.4px}
   .dr-field select{font:inherit;text-transform:none;letter-spacing:normal;color:var(--txt);background:#fff;
@@ -505,6 +581,7 @@ const DATENRAEUME_MAIN = `<div class="dr">
   .dr-crumbs a:hover{color:var(--txt);text-decoration:underline}
   .dr-crumbs .cur{color:var(--txt);font-weight:600}
   .dr-crumbs .sep{color:var(--mut2)}
+  /* Tabellen (Browser + Treffer) */
   .dr-table{width:100%;border-collapse:collapse;background:#fff;border:1px solid var(--line);
     border-radius:var(--r-card);overflow:hidden;box-shadow:var(--shadow)}
   .dr-table thead th{background:var(--ink);color:#fff;text-align:left;font-weight:600;font-size:11.5px;
@@ -520,6 +597,13 @@ const DATENRAEUME_MAIN = `<div class="dr">
   .dr-open{font-size:12px;padding:5px 10px}
   .dr-note{color:var(--mut);padding:16px 4px}
   .dr-err{color:var(--bad);padding:16px 4px}
+  /* Treffer */
+  .dr-reshead{font-size:13px;color:var(--mut);margin-bottom:10px}
+  .dr-restable td .dr-path{color:var(--mut);text-decoration:none;cursor:pointer;font-size:12px;overflow-wrap:anywhere}
+  .dr-restable td .dr-path:hover{color:var(--txt);text-decoration:underline}
+  .dr-badge{display:inline-block;padding:2px 9px;border-radius:var(--r-list);font-size:11px;font-weight:600}
+  .dr-badge.ok{background:var(--soft);color:var(--acc2)}
+  .dr-badge.no{background:#f2f2f2;color:var(--mut)}
 </style>
 <script src="/datenraeume.js" defer></script>`;
 function sendHtml(res, html) { res.set("content-type", "text/html; charset=utf-8"); res.send(html); }
@@ -785,6 +869,31 @@ app.get("/api/projekt", requireAuth, limit(navBudget, "Zu viele Anfragen — kur
     const catalog = await loadAnalysisCatalog(client, root);
     const status = await buildProjectStatus(client, { driveId: root.driveId, projectItemId: target.id, projectName: target.name, catalog });
     res.json({ path: segments.join("/"), catalogSize: catalog.length, ...status });
+  } catch (e) {
+    res.status(e.status || 502).json({ error: e.body ?? e.message });
+  }
+});
+
+// GET /api/search — Suche über den Datei-Index der eingestellten Gesellschaften (nur lesen).
+// Query: q (Freitext, tolerant über Name+Pfad), company, projekt, a, doctype, pattern(ja|nein),
+//        limit, offset, refresh=1 (Index neu aufbauen). Antwort: { total, rows, facets, builtAt }.
+// Ausschlüsse gelten hier automatisch: der Index entsteht ausschließlich über walkDrive (zentrales
+// Tor) → 90_Personal…/_ZU_LOESCHEN…/.DS_Store sind nie enthalten (Bauregel §3, siehe search.test.js).
+app.get("/api/search", requireAuth, limit(navBudget, "Zu viele Such-Anfragen — kurz warten."), async (req, res) => {
+  let client;
+  try { client = navClient(); }
+  catch (e) { return res.status(503).json({ error: `Graph nicht konfiguriert: ${e.message}` }); }
+  try {
+    const principal = principalOf(req);
+    const idx = await getSearchIndex(client, principal, { refresh: req.query.refresh === "1" });
+    const limitN = Math.min(Math.max(parseInt(req.query.limit, 10) || 200, 0), 500);
+    const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+    const { total, rows } = queryIndex(idx.rows, {
+      q: req.query.q || "", company: req.query.company || "", projekt: req.query.projekt || "",
+      a: req.query.a || "", doctype: req.query.doctype || "", pattern: req.query.pattern || "",
+      limit: limitN, offset,
+    });
+    res.json({ total, rows, limit: limitN, offset, facets: idx.facets, builtAt: new Date(idx.builtAt).toISOString(), source: "index" });
   } catch (e) {
     res.status(e.status || 502).json({ error: e.body ?? e.message });
   }

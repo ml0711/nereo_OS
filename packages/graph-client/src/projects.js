@@ -5,18 +5,10 @@
 // Der Katalog wird LIVE aus _ANALYSEKATALOG.md gelesen (Bauregel §9: lesen, nicht abschreiben) —
 // so zieht er automatisch mit, wenn eine Kennung ergänzt wird. Siehe ../../CLAUDE.md §3/§9.
 
-/** Ordnername ist ein Projekt (Projekt-ID JJJJ-NNN_…)? */
-export function isProjectFolder(name) {
-  return /^\d{4}-\d{3}[ _]/.test(name || "");
-}
-
-/** Zerlegt "2026-014_QG20_Ehningen" → { projektId, kuerzel, stadt }. */
-export function parseProjectName(name) {
-  const m = /^(\d{4}-\d{3})[ _]+(.+)$/.exec(name || "");
-  if (!m) return { projektId: null, kuerzel: null, stadt: null };
-  const parts = m[2].split(/[_ ]+/);
-  return { projektId: m[1], kuerzel: parts[0] || null, stadt: parts.slice(1).join(" ") || null };
-}
+// Namens-Regeln kommen aus der EINEN Stelle (naming.js), nicht doppelt hier. Re-Export, damit
+// bestehende Importe von projects.js unverändert weiterlaufen.
+import { isProjectFolder, parseProjectName, analysisCodeOf } from "./naming.js";
+export { isProjectFolder, parseProjectName };
 
 // ---------- Analysekatalog (aus _ANALYSEKATALOG.md) ----------
 
@@ -69,12 +61,6 @@ export async function loadAnalysisCatalog(client, root, { force = false } = {}) 
 
 /** Verwirft den Katalog-Cache (z. B. nach Katalog-Änderung). */
 export function clearCatalogCache() { _catalog = null; }
-
-// Kennung ("A08") aus einem Analyse-Ordnernamen ("A08_Nutzung_Varianten"); sonst null.
-function analysisCodeOf(name) {
-  const m = /^(A\d{2})[ _]/.exec(name || "");
-  return m ? m[1] : null;
-}
 
 // ---------- Projekt-Status ----------
 

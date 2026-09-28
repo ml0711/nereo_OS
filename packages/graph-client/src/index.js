@@ -213,8 +213,10 @@ export function createGraphClient(cfg, opts = {}) {
         )
       ),
 
-    /** Rekursiver Strukturbaum eines Drives (nur Metadaten, keine Inhalte). */
-    async walkDrive(driveId, { itemId = null, maxDepth = 6 } = {}) {
+    /** Rekursiver Strukturbaum eines Drives (nur Metadaten, keine Inhalte).
+     *  keepFileUrls=true: auch für Dateien den webUrl mitgeben (opt-in, für den Such-Index —
+     *  „In SharePoint öffnen"). Default false hält den gecachten Struktur-Index schlank. */
+    async walkDrive(driveId, { itemId = null, maxDepth = 6, keepFileUrls = false } = {}) {
       const visit = async (id, depth) => {
         const kids = await getAll(
           `/drives/${driveId}/${id ? `items/${id}` : "root"}/children` +
@@ -231,8 +233,8 @@ export function createGraphClient(cfg, opts = {}) {
             type: k.folder ? "folder" : "file",
             size: k.size ?? 0,
             modified: k.lastModifiedDateTime,
-            // webUrl nur für Ordner speichern (Quellen-Link zum Datenraum); hält den Index schlank.
-            ...(k.folder ? { webUrl: k.webUrl } : {}),
+            // webUrl für Ordner immer (Quellen-Link); für Dateien nur opt-in (Such-Index).
+            ...(k.folder || keepFileUrls ? { webUrl: k.webUrl } : {}),
           };
           // childCount nur als Optimierung: bei GENAU 0 (sicher leer) sparen wir den Call.
           // Fehlt childCount (undefined/null bei manchen Item-Typen) oder ist >0 → absteigen,
