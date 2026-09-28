@@ -394,12 +394,74 @@ app.get("/inter.woff2", (_req, res) => {
   res.send(readFileSync(resolve(__dir, "public/inter.woff2")));
 });
 
-// ---------- gated: Dashboard + APIs ----------
-app.get("/", (req, res) => {
-  if (!req.session || !req.session.user) return res.redirect("/login");
-  res.set("content-type", "text/html; charset=utf-8");
-  res.send(readFileSync(resolve(__dir, "public/dashboard.html"), "utf8"));
+// ---------- gated: App-Navigation (feste Struktur, Vasco-Prototyp) + APIs ----------
+// EINZIGE Quelle für Seitenleiste UND Adressen. Zwei Gruppen:
+//  · aktive Seiten     -> echte, eigene Adresse, vorerst leer (ehrlich leer, KEINE Beispieldaten)
+//  · „In Vorbereitung" -> eigene Adresse, gemeinsame Platzhalter-Seite mit einem Satz
+// Alle Seiten laufen über requireAuth (nicht angemeldet -> /login). Login/Session unverändert.
+const NAV_ACTIVE = [
+  { key: "dashboard",   path: "/",            label: "Dashboard",          icon: "⌂" },
+  { key: "projekte",    path: "/projekte",    label: "Projekte",           icon: "▤" },
+  { key: "datenraeume", path: "/datenraeume", label: "Datenräume",         icon: "▣" },
+  { key: "reports",     path: "/reports",     label: "Reports & Analysen", icon: "◧" },
+];
+const NAV_PREP = [
+  { key: "unternehmen",   path: "/modul/unternehmen",   label: "Unternehmen",           icon: "▦", desc: "360°-Sicht je Gesellschaft." },
+  { key: "freigaben",     path: "/modul/freigaben",     label: "Freigaben & To-Dos",    icon: "✓", desc: "Alle Freigaben an einer Stelle." },
+  { key: "vertraege",     path: "/modul/vertraege",     label: "Verträge",              icon: "§", desc: "Verträge mit Fristen und Warnungen." },
+  { key: "email",         path: "/modul/email",         label: "E-Mail",                icon: "▧", desc: "Mails Projekten zuordnen und Fristen erkennen." },
+  { key: "kalender",      path: "/modul/kalender",      label: "Kalender",              icon: "▨", desc: "Verfügbarkeiten und Terminfindung." },
+  { key: "steuern",       path: "/modul/steuern",       label: "Steuern & Buchhaltung", icon: "∑", desc: "Belege vorbereiten und an DATEV übergeben." },
+  { key: "banking",       path: "/modul/banking",       label: "Banking & Treasury",    icon: "€", desc: "Salden und Umsätze im Blick." },
+  { key: "legal",         path: "/modul/legal",         label: "Legal & Compliance",    icon: "▩", desc: "Rechtsfälle und Fristen." },
+  { key: "risiken",       path: "/modul/risiken",       label: "Risiken",               icon: "▲", desc: "Zeigt, wo gehandelt werden muss." },
+  { key: "mitarbeiter",   path: "/modul/mitarbeiter",   label: "Mitarbeiter & Rollen",  icon: "◆", desc: "Rechte je Person und Projekt." },
+  { key: "einstellungen", path: "/modul/einstellungen", label: "Einstellungen",         icon: "◇", desc: "Einstellungen für nereo OS." },
+];
+
+const escHtml = (s = "") =>
+  String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const APP_SHELL = readFileSync(resolve(__dir, "public/dashboard.html"), "utf8"); // Shell-Template (einmal beim Boot)
+
+function navHtml(activeKey) {
+  const link = (it, prep) =>
+    `<a class="${it.key === activeKey ? "active" : ""}${prep ? " prep" : ""}" href="${it.path}">` +
+    `<span class="ico">${it.icon}</span> ${escHtml(it.label)}</a>`;
+  return NAV_ACTIVE.map((it) => link(it, false)).join("") +
+    `<div class="sec">In Vorbereitung</div>` +
+    NAV_PREP.map((it) => link(it, true)).join("");
+}
+// Funktions-Replacer: neutralisiert $-Sonderzeichen im Ersatz; jeder Platzhalter kommt genau 1× vor.
+function renderPage(activeKey, title, mainHtml) {
+  return APP_SHELL
+    .replace("<!--SIDEBAR-->", () => navHtml(activeKey))
+    .replace("<!--TITLE-->", () => escHtml(title))
+    .replace("<!--MAIN-->", () => mainHtml);
+}
+// Aktive Seite: ehrlich leer — Überschrift (im Shell) + Hinweis, KEINE erfundenen Zahlen/Diagramme.
+const activeMain = () => `<div class="empty">Noch keine Inhalte — diese Seite wird gerade aufgebaut.</div>`;
+// „In Vorbereitung": gemeinsame Platzhalter-Seite mit einem Satz, was sie später kann.
+const prepMain = (it) =>
+  `<div class="prep-card"><span class="prep-badge">In Vorbereitung</span>` +
+  `<h3>Diese Funktion ist in Vorbereitung</h3><p>${escHtml(it.desc)}</p></div>`;
+function sendHtml(res, html) { res.set("content-type", "text/html; charset=utf-8"); res.send(html); }
+
+// Aktive Seiten (echte, direkt aufrufbare Adressen; vorerst leer).
+for (const it of NAV_ACTIVE)
+  app.get(it.path, requireAuth, (_req, res) => sendHtml(res, renderPage(it.key, it.label, activeMain())));
+
+// „In Vorbereitung"-Seiten (je eigene Adresse, gemeinsame Platzhalter-Seite).
+app.get("/modul/:slug", requireAuth, (req, res) => {
+  const it = NAV_PREP.find((p) => p.path === `/modul/${req.params.slug}`);
+  if (!it) return res.status(404).send(renderPage("", "Seite nicht gefunden", `<div class="empty">Diese Seite gibt es nicht.</div>`));
+  sendHtml(res, renderPage(it.key, it.label, prepMain(it)));
 });
+
+// Übergangsseite: die bisherige, live gespiegelte SharePoint-Ansicht — UNVERÄNDERT übernommen.
+// Entscheidung Mike, 28.09.2026: wird Grundlage der Seite „Datenräume" und danach entfernt.
+// Gleich gegated wie alle anderen Seiten (requireAuth -> /login). Nicht in der Seitenleiste beworben.
+app.get("/workspace", requireAuth, (_req, res) =>
+  sendHtml(res, readFileSync(resolve(__dir, "public/workspace.html"), "utf8")));
 
 app.get("/api/me", requireAuth, (req, res) => res.json({ user: req.session.user }));
 
