@@ -15,6 +15,7 @@ import { createGraphClient, graphConfigFromEnv } from "../../../packages/graph-c
 import { loadLatestIndex, loadAnalyses, logWrite, loadWriteAudit, pingDb,
   loadSubscriptionById, loadSubscriptionByDrive, loadActiveSubscriptions, markDirty, claimDirtySubscription, claimSubscriptionForSync, finishProcessing } from "../../../packages/graph-client/src/index-store.js";
 import { resolveRoot, safeRelSegments, pickCompanies } from "../../../packages/graph-client/src/workspace.js";
+import { loadAnalysisCatalog, buildProjectStatus, listProjectsWithStatus } from "../../../packages/graph-client/src/projects.js";
 import { resolveCapability, serializeCapability } from "../../../packages/graph-client/src/structure.js";
 import { deltaThenRewalkAndSave } from "../../../packages/graph-client/src/sync.js";
 
@@ -640,6 +641,46 @@ app.get("/api/fs", requireAuth, limit(navBudget, "Zu viele Navigations-Anfragen 
       children,
       source: "live",
     });
+  } catch (e) {
+    res.status(e.status || 502).json({ error: e.body ?? e.message });
+  }
+});
+
+// GET /api/projekte?path=<rel zu 04_Projekte> — Projektliste mit Kern-Abdeckung gegen den
+// Analysekatalog A00–A17 (Ebene 1: deterministisch, KEINE KI, kein Token-Verbrauch).
+app.get("/api/projekte", requireAuth, limit(navBudget, "Zu viele Anfragen — kurz warten."), async (req, res) => {
+  let client, segments;
+  try { client = navClient(); }
+  catch (e) { return res.status(503).json({ error: `Graph nicht konfiguriert: ${e.message}` }); }
+  try { segments = safeRelSegments(req.query.path); }
+  catch (e) { return res.status(400).json({ error: e.message }); }
+  try {
+    const { root, reason } = await resolveRoot(client);
+    if (!root) return res.status(503).json({ error: reason || "Workspace-Wurzel nicht auflösbar." });
+    const target = await descend(client, root, segments);
+    const catalog = await loadAnalysisCatalog(client, root);
+    const projects = await listProjectsWithStatus(client, { driveId: root.driveId, projekteItemId: target.id, catalog });
+    res.json({ path: segments.join("/"), catalogSize: catalog.length, projects });
+  } catch (e) {
+    res.status(e.status || 502).json({ error: e.body ?? e.message });
+  }
+});
+
+// GET /api/projekt?path=<rel zu einem Projekt> — Detailstatus A00–A17 dieses Projekts (Ebene 1).
+app.get("/api/projekt", requireAuth, limit(navBudget, "Zu viele Anfragen — kurz warten."), async (req, res) => {
+  let client, segments;
+  try { client = navClient(); }
+  catch (e) { return res.status(503).json({ error: `Graph nicht konfiguriert: ${e.message}` }); }
+  try { segments = safeRelSegments(req.query.path); }
+  catch (e) { return res.status(400).json({ error: e.message }); }
+  if (!segments.length) return res.status(400).json({ error: "Bitte ein Projekt angeben (?path=…)." });
+  try {
+    const { root, reason } = await resolveRoot(client);
+    if (!root) return res.status(503).json({ error: reason || "Workspace-Wurzel nicht auflösbar." });
+    const target = await descend(client, root, segments);
+    const catalog = await loadAnalysisCatalog(client, root);
+    const status = await buildProjectStatus(client, { driveId: root.driveId, projectItemId: target.id, projectName: target.name, catalog });
+    res.json({ path: segments.join("/"), catalogSize: catalog.length, ...status });
   } catch (e) {
     res.status(e.status || 502).json({ error: e.body ?? e.message });
   }

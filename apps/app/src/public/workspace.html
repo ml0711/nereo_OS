@@ -282,7 +282,7 @@ const CAP_ICON={"workspace-root":"⌂",
   dataroom:"▣",projects:"◧",company:"▤",folder:"▸"};
 
 // Zentraler Zustand = Position im gespiegelten Baum + Overlays.
-const STATE={ root:null, sections:[], here:null, portfolio:null, analyses:{}, _navSeq:0 };
+const STATE={ root:null, sections:[], here:null, portfolio:null, analyses:{}, projectStatus:null, _navSeq:0 };
 
 function toast(msg){const t=$("#toast");t.textContent=msg;t.style.display="block";clearTimeout(t._h);t._h=setTimeout(()=>t.style.display="none",4800);}
 
@@ -404,13 +404,54 @@ function dataroomViewHtml(){
        <div class="noai">Noch nicht analysiert. Die Live-Analyse prüft Vollständigkeit gegen Schema 00–16, Risiken und Unstimmigkeiten.</div></div>`;
   return head+`<div class="section-label">Inhalt</div>${browserHtml(h.children)}`;
 }
+// ---------- Ebene 1: Projekt-Vollständigkeit (Analysekatalog A00–A17, deterministisch) ----------
+function coverBar(filled,total,opts={}){
+  const pct=total?Math.round(filled/total*100):0;
+  const col=pct>=75?"var(--ok)":pct>=40?"var(--warn)":"var(--bad)";
+  return `<div class="compl" style="margin-top:8px">
+    <span class="lbl">${esc(opts.label||"Kern")} <b style="color:var(--txt)">${filled}/${total}</b></span>
+    <div class="bar" style="flex:1"><div style="width:${pct}%;background:${col}"></div></div>
+    <span class="lbl">${pct}%</span></div>`;
+}
+function projektStatusHtml(ps){
+  if(!ps.analysen||!ps.analysen.length)
+    return `<div class="card"><div class="head"><h3>${esc(ps.name)}</h3><span class="cap-badge">Projekt</span></div>
+      <div class="noai">Kein Analysekatalog gefunden (_ANALYSEKATALOG.md) — Vollständigkeit nicht bewertbar.</div></div>`;
+  const rows=ps.analysen.map(a=>`<div class="cat ${a.filled?'present':''}">
+    <span class="dot ${a.filled?'y':'n'}"></span><b>${esc(a.code)}</b> ${esc(a.name)}${a.core?` <span class="type">Kern</span>`:""}
+    <span class="note" style="margin-left:auto">${a.filled?`${a.count} Einträge`:(a.present?"leer":"fehlt")}</span></div>`).join("");
+  const miss=ps.missingCore&&ps.missingCore.length?`fehlende Kernanalysen: ${ps.missingCore.join(", ")}`:"alle Kernanalysen vorhanden ✓";
+  const extra=ps.extra&&ps.extra.length?`<div class="note" style="margin-top:8px">Nicht im Katalog: ${esc(ps.extra.join(", "))}</div>`:"";
+  return `<div class="card">
+    <div class="head"><h3>${esc(ps.name)}</h3><span class="cap-badge">Projekt</span>
+      ${ps.stadt?`<span class="proj">· ${esc(ps.stadt)}</span>`:""}</div>
+    ${coverBar(ps.core.filled,ps.core.total,{label:"Kernanalysen"})}
+    <div class="note" style="margin:4px 0 10px">Gesamt ${ps.all.filled}/${ps.all.total} Analysen belegt · ${miss}</div>
+    <div class="cats">${rows}</div>${extra}</div>`;
+}
+function projektViewHtml(){
+  const h=STATE.here, ps=STATE.projectStatus;
+  const head=ps?projektStatusHtml(ps):`<div class="state">Analyse-Status lädt …</div>`;
+  return head+`<div class="section-label">Inhalt</div>${browserHtml(h.children)}`;
+}
+function projekteViewHtml(){
+  const h=STATE.here, ps=STATE.projectStatus;
+  const sub=`<div class="page-sub">Projekte in „${esc(h.self.name)}" — Kern-Abdeckung gegen den Analysekatalog A00–A17.</div>`;
+  if(!ps||!ps.projects) return sub+`<div class="state">Projekt-Status lädt …</div>`+browserHtml(h.children);
+  if(!ps.projects.length) return sub+`<div class="empty">Keine Projekte gefunden.</div>`;
+  const tiles=ps.projects.map(p=>`<div class="tile" data-nav="${esc(h.path+"/"+p.name)}">
+    <div class="t-top"><span class="t-ico">▣</span><span class="t-name">${esc(p.name)}</span></div>
+    ${coverBar(p.core.filled,p.core.total,{label:"Kern"})}
+    <div class="t-meta"><span>${p.missingCore&&p.missingCore.length?`fehlt: ${esc(p.missingCore.join(", "))}`:"alle Kernanalysen ✓"}</span></div></div>`).join("");
+  return sub+`<div class="tiles">${tiles}</div>`;
+}
 function renderView(){
   if(!STATE.here) return;
   const v=STATE.here.capability.view;
   const html = v==="workspace-root"?rootViewHtml()
-    : v==="dataroom"?dataroomViewHtml()
-    : v==="projects"?projectsViewHtml()
-    : browserHtml(STATE.here.children); // company + folder
+    : v==="projekte"?projekteViewHtml()
+    : v==="projekt"?projektViewHtml()
+    : browserHtml(STATE.here.children); // Gesellschaft/Unternehmen/… + Ordner
   $("#view").innerHTML=html;
 }
 
@@ -467,6 +508,17 @@ async function navigate(segments,{push=true}={}){
   if(d.error){ $("#view").innerHTML=`<div class="state err">${esc(d.error)}</div>`; return; }
   STATE.here=d;
   if(push){ const hp="#/"+segments.map(encodeURIComponent).join("/"); if(location.hash!==hp) history.pushState(null,"",hp); }
+  // Projekt-Vollständigkeit (Ebene 1) für Projekte-/Projekt-Ansichten nachladen — nicht-blockierend.
+  STATE.projectStatus=null;
+  const v=d.capability&&d.capability.view;
+  if(v==="projekte"||v==="projekt"){
+    const ep=v==="projekt"?"/api/projekt":"/api/projekte";
+    fetchJSON(ep+"?path="+encodeURIComponent(rel)).then(ps=>{
+      if(seq!==STATE._navSeq) return; // veraltete Antwort verwerfen
+      STATE.projectStatus=(ps&&!ps.error)?ps:null;
+      renderView();
+    }).catch(()=>{});
+  }
   renderShell();
 }
 
