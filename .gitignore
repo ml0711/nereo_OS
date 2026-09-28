@@ -13,6 +13,8 @@ out/
 .env
 .env.*
 !.env.example
+# lokale Geheimnis-Datei für Claude (User-Anlegen/sudo) — NIE committen
+.secrets.local
 
 # logs
 *.log
