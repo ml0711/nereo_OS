@@ -117,6 +117,37 @@ async function cachedChild(client, driveId, parentId, name) {
   return node;
 }
 
+// Personen-Schlüssel für den Zwischenspeicher (Datenräume-Seite). HEUTE ein FESTER Wert:
+// alle lesen über EINE technische Microsoft-Identität (App-only, navClient) → alle sehen alles.
+// SPÄTER (Login je Person, delegierter Graph-Token): hier req.session.user.sub zurückgeben, DANN
+// filtert Microsoft selbst UND der Zwischenspeicher ist automatisch je Person getrennt (der
+// Cache-Schlüssel ist `Person|Laufwerk|Ordner`). Zweite Umbaustelle: navClient() → per-User-Client.
+function principalOf(_req) { return "shared"; }
+
+// Ergebnis-Zwischenspeicher EINER Ebene (Kinderliste), je (Person, Laufwerk, Ordner). In-Memory
+// (kein neuer Dienst, keine DB); die App läuft als EIN Container. 60s: zweites Öffnen ist sofort da,
+// wir fragen Microsoft nicht bei jedem Klick / laufen nicht in Abfragegrenzen, neue Ordner erscheinen
+// dennoch spätestens nach 1 Min — und "Neu laden" (refresh) holt sofort frisch.
+const FS_TTL_MS = 60 * 1000;
+const _fsCache = new Map(); // `${principal}|${driveId}|${itemId}` -> { kids, at }
+async function cachedListChildren(client, principal, driveId, itemId, { refresh = false } = {}) {
+  const key = `${principal}|${driveId}|${itemId}`;
+  if (refresh) _fsCache.delete(key);
+  const hit = _fsCache.get(key);
+  if (hit && Date.now() - hit.at < FS_TTL_MS) return hit;
+  const kids = await client.listChildren(driveId, itemId); // zentral gefiltert (Ausschluss) + alle Seiten
+  const entry = { kids, at: Date.now() };
+  _fsCache.set(key, entry);
+  if (_fsCache.size > 4000) _fsCache.clear(); // Backstop gegen unbegrenztes Wachstum
+  return entry;
+}
+
+// Dokumentdatum aus dem Dateinamen: führendes JJJJ-MM-TT (Konvention _KONVENTIONEN.md §5), sonst null.
+function docDateFromName(name) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})(?=[_ .]|$)/.exec(name || "");
+  return m ? `${m[1]}-${m[2]}-${m[3]}` : null;
+}
+
 // Id-basierter Abstieg von der Wurzel entlang der Pfad-Segmente. Containment by construction:
 // es werden NUR Kinder eines bereits aufgelösten Elterns akzeptiert — driveId bleibt server-fix,
 // kein client-geliefertes itemId wird je blind gelistet (Schutz gegen Ausbruch aus dem Workspace).
@@ -124,8 +155,9 @@ async function descend(client, root, segments) {
   let cur = { id: root.itemId, name: root.name, webUrl: root.webUrl, folder: {} };
   for (const seg of segments) {
     const next = await cachedChild(client, root.driveId, cur.id, seg);
-    if (!next) { const e = new Error(`Pfad nicht (mehr) vorhanden: "${seg}".`); e.status = 404; throw e; }
-    if (!next.folder) { const e = new Error(`"${seg}" ist kein Ordner.`); e.status = 400; throw e; }
+    // Generisch "nicht gefunden" (Status 404, KEIN Name/Detail) — deckt fehlende UND ausgeschlossene
+    // Ordner ab (childByName liefert bei isExcluded null), ohne Existenz/Namen zu bestätigen. Bauregel §3.
+    if (!next || !next.folder) { const e = new Error("nicht gefunden"); e.status = 404; throw e; }
     cur = next;
   }
   return cur;
@@ -445,11 +477,67 @@ const activeMain = () => `<div class="empty">Noch keine Inhalte — diese Seite 
 const prepMain = (it) =>
   `<div class="prep-card"><span class="prep-badge">In Vorbereitung</span>` +
   `<h3>Diese Funktion ist in Vorbereitung</h3><p>${escHtml(it.desc)}</p></div>`;
+
+// Seite „Datenräume": Ordner-/Datei-Browser je Gesellschaft. Gerüst im festen Shell-#view;
+// die Logik lädt /datenraeume.js (holt /api/workspace + /api/fs?counts=1). Design nach Tokens,
+// Tabelle mit schwarzem Kopf. KEIN KI-Analyse-Knopf (eigener späterer Schritt).
+const DATENRAEUME_MAIN = `<div class="dr">
+  <div class="dr-top">
+    <label class="dr-field">Gesellschaft <select id="dr-company" aria-label="Gesellschaft wählen"></select></label>
+    <span class="dr-spacer"></span>
+    <span class="dr-stand" id="dr-stand">Stand: —</span>
+    <button class="btn ghost" id="dr-reload" type="button">↻ Neu laden</button>
+  </div>
+  <nav class="dr-crumbs" id="dr-crumbs" aria-label="Pfad"></nav>
+  <div id="dr-body"><div class="dr-note">Lädt …</div></div>
+</div>
+<style>
+  .dr{max-width:1120px}
+  .dr-top{display:flex;align-items:center;gap:14px;margin-bottom:14px;flex-wrap:wrap}
+  .dr-field{display:flex;align-items:center;gap:9px;font-size:12px;color:var(--mut);text-transform:uppercase;letter-spacing:.4px}
+  .dr-field select{font:inherit;text-transform:none;letter-spacing:normal;color:var(--txt);background:#fff;
+    border:1px solid var(--line);border-radius:var(--r-card);padding:7px 11px;cursor:pointer}
+  .dr-field select:hover{border-color:#000}
+  .dr-spacer{flex:1}
+  .dr-stand{font-size:12px;color:var(--mut2);white-space:nowrap}
+  .dr-crumbs{display:flex;align-items:center;flex-wrap:wrap;gap:7px;margin-bottom:12px;font-size:13px}
+  .dr-crumbs a{color:var(--mut);text-decoration:none;cursor:pointer}
+  .dr-crumbs a:hover{color:var(--txt);text-decoration:underline}
+  .dr-crumbs .cur{color:var(--txt);font-weight:600}
+  .dr-crumbs .sep{color:var(--mut2)}
+  .dr-table{width:100%;border-collapse:collapse;background:#fff;border:1px solid var(--line);
+    border-radius:var(--r-card);overflow:hidden;box-shadow:var(--shadow)}
+  .dr-table thead th{background:var(--ink);color:#fff;text-align:left;font-weight:600;font-size:11.5px;
+    padding:11px 12px;text-transform:uppercase;letter-spacing:.5px}
+  .dr-table tbody td{padding:9px 12px;border-top:1px solid var(--line2);vertical-align:middle}
+  .dr-table tbody tr.folder{cursor:pointer}
+  .dr-table tbody tr.folder:hover{background:var(--soft2)}
+  .dr-name{display:flex;align-items:center;gap:9px;min-width:0}
+  .dr-ico{width:16px;text-align:center;color:var(--mut2);flex:none}
+  .dr-name b{font-weight:500;color:var(--txt);overflow-wrap:anywhere}
+  .dr-num{color:var(--mut);white-space:nowrap}
+  .dr-col-r{text-align:right;white-space:nowrap}
+  .dr-open{font-size:12px;padding:5px 10px}
+  .dr-note{color:var(--mut);padding:16px 4px}
+  .dr-err{color:var(--bad);padding:16px 4px}
+</style>
+<script src="/datenraeume.js" defer></script>`;
 function sendHtml(res, html) { res.set("content-type", "text/html; charset=utf-8"); res.send(html); }
 
-// Aktive Seiten (echte, direkt aufrufbare Adressen; vorerst leer).
+// Aktive Seiten (echte, direkt aufrufbare Adressen; vorerst leer) — außer „Datenräume" (eigene Seite unten).
 for (const it of NAV_ACTIVE)
-  app.get(it.path, requireAuth, (_req, res) => sendHtml(res, renderPage(it.key, it.label, activeMain())));
+  if (it.key !== "datenraeume")
+    app.get(it.path, requireAuth, (_req, res) => sendHtml(res, renderPage(it.key, it.label, activeMain())));
+
+// „Datenräume": Ordner-/Datei-Browser je Gesellschaft (in der festen Shell). Gegated wie alle Seiten.
+app.get("/datenraeume", requireAuth, (_req, res) =>
+  sendHtml(res, renderPage("datenraeume", "Datenräume", DATENRAEUME_MAIN)));
+// Seiten-Skript (statisch, wie logo/inter). Nicht sensibel — ruft nur die gegateten APIs auf.
+app.get("/datenraeume.js", (_req, res) => {
+  res.set("content-type", "application/javascript; charset=utf-8");
+  res.set("cache-control", "no-store");
+  res.send(readFileSync(resolve(__dir, "public/datenraeume.js"), "utf8"));
+});
 
 // „In Vorbereitung"-Seiten (je eigene Adresse, gemeinsame Platzhalter-Seite).
 app.get("/modul/:slug", requireAuth, (req, res) => {
@@ -602,8 +690,11 @@ app.get("/api/fs", requireAuth, limit(navBudget, "Zu viele Navigations-Anfragen 
     const { root, reason } = await resolveRoot(client);
     if (!root) return res.status(503).json({ error: reason || "Workspace-Wurzel nicht auflösbar." });
     const isRoot = segments.length === 0;
+    const refresh = req.query.refresh === "1";
+    const withCounts = req.query.counts === "1"; // je Unterordner die DIREKTE Dateizahl (extra Blick hinein)
+    const principal = principalOf(req);
     const target = await descend(client, root, segments);
-    const kids = await client.listChildren(root.driveId, target.id);
+    const { kids, at } = await cachedListChildren(client, principal, root.driveId, target.id, { refresh });
     // An der Wurzel NUR die konfigurierten Gesellschaften zeigen (wie die Seitenleiste) —
     // sonst tauchten hier "Projekte_alt"/"_VORLAGE_Gesellschaft" auf. Tiefer: alles (minus
     // zentraler Ausschlüsse, die listChildren schon entfernt hat). Bauregel §2/§3.
@@ -614,6 +705,17 @@ app.get("/api/fs", requireAuth, limit(navBudget, "Zu viele Navigations-Anfragen 
     const cap = serializeCapability(resolveCapability(ctx), { writeEnabled: GRAPH_WRITE_ENABLED });
     const breadcrumb = [{ name: root.name, path: "" }];
     for (let i = 0; i < segments.length; i++) breadcrumb.push({ name: segments[i], path: segments.slice(0, i + 1).join("/") });
+    // Direkte Dateizahl je Unterordner (nur bei ?counts=1) — je Ordner EIN gecachter Blick hinein,
+    // parallel. Microsoft liefert keine reine Dateizahl (childCount zählt auch Unterordner mit).
+    let fileCounts = null;
+    if (withCounts) {
+      const folders = visibleKids.filter((k) => k.folder);
+      const counts = await Promise.all(folders.map((f) =>
+        cachedListChildren(client, principal, root.driveId, f.id, { refresh })
+          .then((e) => e.kids.filter((c) => c.file).length)
+          .catch(() => null)));
+      fileCounts = new Map(folders.map((f, i) => [f.id, counts[i]]));
+    }
     const children = visibleKids
       .map((k) => ({
         name: k.name,
@@ -623,10 +725,11 @@ app.get("/api/fs", requireAuth, limit(navBudget, "Zu viele Navigations-Anfragen 
         webUrl: k.webUrl ?? null,
         size: k.size ?? 0,
         childCount: k.folder?.childCount ?? null,
+        fileCount: k.folder && fileCounts ? (fileCounts.get(k.id) ?? null) : null, // direkte Dateien (counts=1)
         modified: k.lastModifiedDateTime ?? null,
         ext: k.file ? (k.name.includes(".") ? k.name.split(".").pop().toLowerCase() : "") : null,
-        // KI-Analyse ist in dieser Ausbaustufe pausiert (Schritt B: Projekt-Analysekatalog
-        // A00–A17 statt altem Datenraum-Schema 00–16). Bis dahin kein Inline-Analyse-Knopf.
+        docDate: k.file ? docDateFromName(k.name) : null, // Dokumentdatum aus dem Dateinamen
+        // KI-Analyse ist in dieser Ausbaustufe pausiert (eigener späterer Schritt).
         analyzable: false,
       }))
       .sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name, "de") : a.type === "folder" ? -1 : 1));
@@ -639,6 +742,7 @@ app.get("/api/fs", requireAuth, limit(navBudget, "Zu viele Navigations-Anfragen 
       // dataroom_key (== gecachter Analyse-Schlüssel), nur an Datenraum-Positionen.
       indexPath: cap.id === "dataroom" ? `/${root.name}/${relPath}`.replace(/\/+$/, "") : null,
       children,
+      fetchedAt: new Date(at).toISOString(), // "Stand": wann diese Ebene zuletzt aus Microsoft geholt wurde
       source: "live",
     });
   } catch (e) {

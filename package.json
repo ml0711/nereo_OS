@@ -11,6 +11,7 @@
     "dev": "echo \"TODO: dev-orchestrierung (z. B. turbo/concurrently)\" && exit 0",
     "build": "echo \"TODO: build\" && exit 0",
     "lint": "echo \"TODO: lint\" && exit 0",
+    "test": "node --test",
     "graph:test": "node packages/graph-client/src/test-connection.js",
     "graph:crawl": "node packages/graph-client/src/crawl.js",
     "graph:export": "node packages/graph-client/src/export-index.js",
