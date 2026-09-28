@@ -376,6 +376,24 @@ app.get("/api/graph/renew", async (req, res) => {
   }
 });
 
+// Marke + Design-Assets (öffentlich, kein Login nötig): Logo (Seitenleiste), Tab-Symbol, Inter-Schrift.
+// Inter wird SELBST ausgeliefert (kein Google Fonts) — Datenschutz, CLAUDE.md.
+app.get("/logo.svg", (_req, res) => {
+  res.set("content-type", "image/svg+xml; charset=utf-8");
+  res.set("cache-control", "public, max-age=3600");
+  res.send(readFileSync(resolve(__dir, "public/logo.svg"), "utf8"));
+});
+app.get("/nereo_n_black.svg", (_req, res) => {
+  res.set("content-type", "image/svg+xml; charset=utf-8");
+  res.set("cache-control", "public, max-age=3600");
+  res.send(readFileSync(resolve(__dir, "public/nereo_n_black.svg"), "utf8"));
+});
+app.get("/inter.woff2", (_req, res) => {
+  res.set("content-type", "font/woff2");
+  res.set("cache-control", "public, max-age=31536000, immutable");
+  res.send(readFileSync(resolve(__dir, "public/inter.woff2")));
+});
+
 // ---------- gated: Dashboard + APIs ----------
 app.get("/", (req, res) => {
   if (!req.session || !req.session.user) return res.redirect("/login");

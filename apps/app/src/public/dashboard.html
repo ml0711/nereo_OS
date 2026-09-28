@@ -4,6 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>nereo OS</title>
+<link rel="icon" href="/nereo_n_black.svg" type="image/svg+xml" />
 <script>
   // Logout-Härtung: Nach dem Abmelden darf der Zurück-Button nicht die aus dem
   // bfcache wiederhergestellte Dashboard-Ansicht zeigen (sieht aus wie "noch
@@ -14,27 +15,37 @@
   });
 </script>
 <style>
+  @font-face{
+    font-family:'Inter';font-style:normal;font-weight:100 900;font-display:swap;
+    src:url('/inter.woff2') format('woff2');
+  }
   :root{
-    --bg:#0b0d10; --bg2:#0f1216; --panel:#141a20; --panel2:#1b232c; --line:#222a33;
-    --txt:#e6edf3; --mut:#8b97a5; --mut2:#5d6773;
-    --acc:#2f6bff; --acc2:#5b8cff; --ok:#39c07a; --warn:#e6a23c; --bad:#e15b5b;
-    --sb:268px;
+    /* nereo Design-Tokens (Vasco-Prototyp) — zentrale Stelle. Helle CI. */
+    --bg:#f7f7f7; --bg2:#ffffff; --panel:#ffffff; --panel2:#f1f1f1; --ink:#000000;
+    --line:#dedede; --line2:#eeeeee;
+    --txt:#111111; --mut:#666666; --mut2:#8a8a8a;
+    --acc:#06eddb; --acc2:#0a9d92; --soft:rgba(6,237,219,.12); --soft2:rgba(6,237,219,.055);
+    --ok:#1f9d5b; --warn:#c07d1e; --bad:#d94a4a;
+    --shadow:0 8px 26px rgba(0,0,0,.055);
+    --r-card:5px; --r-list:4px;
+    --sb:238px;
   }
   *{box-sizing:border-box}
   html,body{margin:0;height:100%}
   body{background:var(--bg);color:var(--txt);
-    font:15px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+    font:13px/1.5 'Inter','Helvetica Neue',Arial,sans-serif;letter-spacing:-.005em}
   a{color:inherit}
   code{background:var(--panel2);padding:1px 5px;border-radius:4px;font-size:12px}
   .topbar{position:fixed;top:0;left:0;right:0;height:58px;z-index:20;
     display:flex;align-items:center;gap:14px;padding:0 20px;
     background:rgba(11,13,16,.85);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
-  .brand{font-weight:700;letter-spacing:-.02em;font-size:19px}
-  .brand span{color:var(--acc2)}
+  .brand{display:flex;align-items:center;gap:9px;font-weight:700;letter-spacing:-.02em;font-size:19px}
+  .brand-logo{height:21px;width:auto;display:block}
+  .brand-os{color:var(--txt);font-size:27px;font-weight:300;text-transform:uppercase;letter-spacing:.02em}
   .spacer{flex:1}
   .user{display:flex;align-items:center;gap:10px;font-size:13.5px;color:var(--mut)}
   .avatar{width:30px;height:30px;border-radius:50%;display:grid;place-items:center;
-    background:linear-gradient(135deg,var(--acc),#7b3ff2);color:#fff;font-weight:700;font-size:13px}
+    background:linear-gradient(135deg,var(--acc),#0a7d74);color:#052e29;font-weight:700;font-size:13px}
   .user b{color:var(--txt);font-weight:600}
   .btn{display:inline-flex;align-items:center;gap:7px;cursor:pointer;text-decoration:none;
     border:1px solid var(--line);background:var(--panel2);color:var(--txt);
@@ -44,12 +55,12 @@
   .btn[disabled]:hover{border-color:var(--line)}
   .btn.ghost{background:transparent}
   .btn.sm{padding:5px 11px;font-size:12.5px;border-radius:8px}
-  .btn.acc{background:var(--acc);border-color:var(--acc);color:#fff}
+  .btn.acc{background:var(--acc);border-color:var(--acc);color:#052e29}
   .shell{display:flex;min-height:100vh;padding-top:58px}
   .side{position:fixed;top:58px;bottom:0;left:0;width:var(--sb);padding:16px 14px;
     border-right:1px solid var(--line);background:var(--bg2);overflow:auto}
   .root-pin{display:flex;align-items:center;gap:11px;padding:12px 13px;margin-bottom:12px;border-radius:11px;
-    background:rgba(47,107,255,.1);border:1px solid rgba(47,107,255,.28);cursor:pointer}
+    background:rgba(6,237,219,.1);border:1px solid rgba(6,237,219,.28);cursor:pointer}
   .root-pin:hover{border-color:var(--acc)}
   .root-pin .ico{font-size:17px;color:var(--acc2)}
   .root-pin b{font-weight:600;font-size:14px;display:block;line-height:1.25}
@@ -58,7 +69,7 @@
   .nav a{display:flex;align-items:center;gap:11px;padding:9px 12px;border-radius:9px;
     color:var(--mut);text-decoration:none;font-size:14px;font-weight:500;cursor:pointer}
   .nav a:hover{background:var(--panel);color:var(--txt)}
-  .nav a.active{background:rgba(47,107,255,.13);color:var(--txt)}
+  .nav a.active{background:rgba(6,237,219,.13);color:var(--txt)}
   .nav a.active .ico{color:var(--acc2)}
   .nav .ico{width:18px;text-align:center;color:var(--mut2);font-size:15px}
   .sec{margin:18px 0 6px;padding:0 12px;font-size:11px;text-transform:uppercase;letter-spacing:.7px;color:var(--mut2)}
@@ -71,7 +82,7 @@
   .ctx-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:20px}
   .ctx-head h2{margin:0;font-size:21px;letter-spacing:-.01em}
   .cap-badge{font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;text-transform:uppercase;letter-spacing:.4px;
-    background:rgba(47,107,255,.14);color:var(--acc2)}
+    background:rgba(6,237,219,.14);color:var(--acc2)}
   .actionbar{display:flex;gap:8px;margin-left:auto;flex-wrap:wrap}
   .page-sub{color:var(--mut);font-size:13.5px;margin-bottom:18px}
   .kpis{display:grid;grid-template-columns:repeat(auto-fill,minmax(168px,1fr));gap:13px;margin-bottom:24px}
@@ -104,7 +115,7 @@
   .card .proj{color:var(--mut);font-size:13px}
   .badge{font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;text-transform:uppercase;letter-spacing:.4px}
   .b-Aktiv{background:rgba(57,192,122,.15);color:var(--ok)}
-  .b-Pipeline{background:rgba(47,107,255,.15);color:var(--acc2)}
+  .b-Pipeline{background:rgba(6,237,219,.15);color:var(--acc2)}
   .b-Vorlage{background:rgba(230,162,60,.15);color:var(--warn)}
   .b-Dropped{background:rgba(225,91,91,.15);color:var(--bad)}
   .meta{color:var(--mut);font-size:13px;margin:11px 0 12px;display:flex;gap:18px;flex-wrap:wrap}
@@ -125,7 +136,7 @@
   .ai{margin-top:14px;border-top:1px solid var(--line);padding-top:14px}
   .ai .ai-head{display:flex;align-items:center;gap:11px;flex-wrap:wrap}
   .ai .tag{font-size:11px;font-weight:700;letter-spacing:.4px;color:var(--acc2);
-    background:rgba(47,107,255,.12);padding:3px 8px;border-radius:6px}
+    background:rgba(6,237,219,.12);padding:3px 8px;border-radius:6px}
   .score{font-weight:800;font-size:15px}
   .ai h4{margin:13px 0 7px;font-size:12.5px;text-transform:uppercase;letter-spacing:.5px;color:var(--mut)}
   .ai ul{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:6px}
@@ -155,12 +166,84 @@
     .main{margin-left:0;padding:18px 14px}
     .menu-btn{display:inline-flex}
   }
+
+  /* ===== nereo helles Design (Vasco-Prototyp) — Komponenten, nur Aussehen ===== */
+  /* Formen: Karten/Knöpfe 5px, Listen/Etiketten 4px. Keine Pillen, keine Verläufe. */
+  .card,.kpi,.tile,.ftable,.cfg,.empty,.toast,.cap-badge,.menu-btn,.btn{border-radius:var(--r-card)}
+  .badge,.b-Aktiv,.b-Pipeline,.b-Vorlage,.b-Dropped,.type,.sev,.btn.sm,.stale,.nav a,.root-pin,.bar,.bar>div{border-radius:var(--r-list)}
+
+  /* Kopfzeile: weiß, feine Linie unten, schwarzer Text (kein Blur/Verlauf) */
+  .topbar{background:#fff;backdrop-filter:none;border-bottom:1px solid var(--line)}
+  .user{color:var(--mut)} .user b{color:var(--txt)}
+  .avatar{background:#000;color:#fff}
+  .menu-btn{background:#fff;border:1px solid var(--line);color:var(--txt)}
+  .menu-btn:hover{border-color:#000}
+
+  /* Seitenleiste: WEISS (wie Vasco-Vorlage); Logo (türkiser Punkt) + „OS" daneben, dünn */
+  .side{background:#fff;border-right:1px solid var(--line)}
+  .side-brand{display:flex;flex-direction:row;align-items:baseline;gap:9px;
+    padding:2px 4px 16px;margin-bottom:10px;border-bottom:1px solid var(--line2)}
+  .side-logo{height:20px;width:auto;max-width:60%;display:block}
+  .side-os{color:var(--mut);font-size:34px;font-weight:300;line-height:1;text-transform:uppercase;letter-spacing:.01em}
+  .sec{color:var(--mut2)}
+  .note{color:var(--mut2)}
+  .nav a{color:var(--mut);position:relative}
+  .nav .ico{color:var(--mut2)}
+  .nav a:hover{background:#f0f0f0;color:var(--txt)}
+  .nav a.active{background:var(--soft);color:var(--txt)}
+  .nav a.active .ico{color:var(--txt)}
+  .nav a.active::before{content:"";position:absolute;left:0;top:6px;bottom:6px;width:3px;background:var(--acc)}
+  .root-pin{background:var(--soft);border:1px solid var(--line)}
+  .root-pin:hover{border-color:var(--acc)}
+  .root-pin .ico{color:var(--acc2)}
+  .root-pin b{color:var(--txt)}
+  .root-pin .sub{color:var(--mut2)}
+
+  /* Knöpfe: Standard weiß + grauer Rand (Hover schwarz); Akzent Türkis + schwarze Schrift */
+  .btn{background:#fff;border:1px solid var(--line);color:var(--txt)}
+  .btn:hover{border-color:#000}
+  .btn[disabled]:hover{border-color:var(--line)}
+  .btn.ghost{background:transparent}
+  .btn.acc{background:var(--acc);border-color:var(--acc);color:#000}
+  .btn.acc:hover{border-color:var(--acc)}
+  .btn.primary{background:#000;border-color:#000;color:#fff}
+  .btn.primary:hover{border-color:#000;text-decoration:underline;text-decoration-color:var(--acc);text-underline-offset:3px}
+
+  /* Karten + weicher Schatten */
+  .card{background:#fff;border:1px solid var(--line);box-shadow:var(--shadow)}
+  .cfg{background:#fff;border:1px solid var(--warn);box-shadow:var(--shadow)}
+  .empty{background:#fff;border:1px dashed var(--line)}
+  .kpi{background:#fff;border:1px solid var(--line);border-top:3px solid #000;box-shadow:var(--shadow)}
+  .kpi:hover{border-top-color:var(--acc)}
+  .kpi .n{color:#000}
+  .tile{background:#fff;border:1px solid var(--line);box-shadow:var(--shadow)}
+  .tile:hover{border-color:var(--acc)}
+  .tile .t-ico{color:var(--acc2)}
+  .ftable{background:#fff;border:1px solid var(--line);box-shadow:var(--shadow)}
+  .fr{border-top:1px solid var(--line2)}
+  .fr:hover{background:var(--soft2)}
+  .type{background:#fff;border:1px solid var(--line);color:var(--mut)}
+  .bar{background:var(--panel2)}
+  .bar>div{background:var(--acc)}
+  .toast{background:#fff;border:1px solid var(--line);box-shadow:var(--shadow);color:var(--txt)}
+
+  /* Seiten-Kopfzeile: Titel 23px/~760, feine Linie darunter */
+  .ctx-head{border-bottom:1px solid var(--line);padding-bottom:14px}
+  .ctx-head h2{font-size:23px;font-weight:760;color:#000;letter-spacing:-.01em}
+  .cap-badge{background:var(--soft);color:#065f57}
+
+  /* Etiketten (Status): weiches Türkis + Rand · Warnung weiß + gestrichelt · kritisch schwarz/weiß */
+  .b-Aktiv{background:var(--soft);color:#065f57;border:1px solid var(--acc)}
+  .b-Pipeline{background:var(--soft);color:#065f57;border:1px solid var(--acc)}
+  .b-Vorlage{background:#fff;color:var(--mut);border:1px dashed var(--mut2)}
+  .b-Dropped{background:#000;color:#fff}
+  .ai .tag{background:var(--soft);color:#065f57}
+  .toggle{color:var(--acc2)}
 </style>
 </head>
 <body>
 <div class="topbar">
   <button class="menu-btn" id="menuBtn" aria-label="Menü">☰</button>
-  <div class="brand">nereo<span>·</span>OS</div>
   <div class="spacer"></div>
   <div class="user"><span class="avatar" id="avatar">·</span><span>Angemeldet als <b id="who">…</b></span></div>
   <a class="btn ghost" href="/logout">Abmelden</a>
@@ -168,6 +251,7 @@
 
 <div class="shell">
   <aside class="side">
+    <div class="side-brand"><img class="side-logo" src="/logo.svg" alt="nereo"><span class="side-os">OS</span></div>
     <div class="root-pin" id="rootPin" data-nav=""><span class="ico">⌂</span><div><b id="rootName">Lädt …</b><span class="sub">Workspace-Wurzel</span></div></div>
     <nav class="nav" id="nav"></nav>
     <div class="sec">Quellen</div>
@@ -191,7 +275,7 @@ const fmtDate=(s)=>s?new Date(s).toLocaleDateString("de-DE"):"—";
 const esc=(s="")=>String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 // Nur http(s)-Links zulassen — esc() neutralisiert javascript:/data: NICHT (Defense-in-Depth).
 const safeHref=(u)=>/^https?:\/\//i.test(String(u||""))?u:null;
-const STATUS_COLOR={Aktiv:"#39c07a",Pipeline:"#2f6bff",Vorlage:"#e6a23c",Dropped:"#e15b5b"};
+const STATUS_COLOR={Aktiv:"#39c07a",Pipeline:"#06eddb",Vorlage:"#e6a23c",Dropped:"#e15b5b"};
 const CAP_ICON={"workspace-root":"⌂",dataroom:"▣",projects:"◧",company:"▤",folder:"▸"};
 
 // Zentraler Zustand = Position im gespiegelten Baum + Overlays.
