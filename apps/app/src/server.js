@@ -15,7 +15,7 @@ import { createGraphClient, graphConfigFromEnv } from "../../../packages/graph-c
 import { loadLatestIndex, loadAnalyses, logWrite, loadWriteAudit, pingDb,
   loadSubscriptionById, loadSubscriptionByDrive, loadActiveSubscriptions, markDirty, claimDirtySubscription, claimSubscriptionForSync, finishProcessing } from "../../../packages/graph-client/src/index-store.js";
 import { resolveRoot, safeRelSegments, pickCompanies } from "../../../packages/graph-client/src/workspace.js";
-import { loadAnalysisCatalog, buildProjectStatus, listProjectsWithStatus } from "../../../packages/graph-client/src/projects.js";
+import { loadAnalysisCatalog, buildProjectStatus, listProjectsWithStatus, projectsOverview, projectDetail, buildProjectsIndex } from "../../../packages/graph-client/src/projects.js";
 import { docDateFromName, loadDocTypes } from "../../../packages/graph-client/src/naming.js";
 import { buildSearchIndex, queryIndex, computeFacets } from "../../../packages/graph-client/src/search.js";
 import { resolveCapability, serializeCapability } from "../../../packages/graph-client/src/structure.js";
@@ -185,6 +185,34 @@ async function getSearchIndex(client, principal, { refresh = false } = {}) {
     // Fehlgeschlagen: building-Marke lösen, vorigen Stand (falls vorhanden) behalten.
     const cur = _searchIndex.get(principal);
     if (cur?.building === building) { if (entry?.builtAt) _searchIndex.set(principal, entry); else _searchIndex.delete(principal); }
+    throw e;
+  }
+}
+
+// ---------- Projekte-Index (in-memory, voll-tief; NUR für die Seite „Projekte") ----------
+// Getrennt vom Such-Index: die Projektseite braucht VOLLE Ordnertiefe (register-genau), die Suche
+// bleibt bei Tiefe 6 (unverändert). Gebaut über das zentrale Tor (Ausschlüsse zentral raus). Liegt
+// nur im Arbeitsspeicher (kein neuer Dienst/DB, Bauregel §1); 10 Min gültig, refresh=1 baut neu.
+// Schlüssel `principalOf|projektePath` (heute „shared" — App-only; spätere Personen-Trennung wie beim
+// _fsCache/_searchIndex: principalOf → user.sub UND navClient → per-User-Client). Single-Flight.
+const PROJIDX_TTL_MS = 10 * 60 * 1000;
+const _projIndex = new Map(); // `${principal}|${projektePath}` -> { rows, folders, builtAt, building:Promise|null }
+async function getProjectsIndex(client, principal, { driveId, projekteItemId, projektePath, refresh = false } = {}) {
+  const key = `${principal}|${projektePath}`;
+  const entry = _projIndex.get(key);
+  if (entry?.building) return entry.building; // Aufbau läuft → mitbenutzen
+  if (!refresh && entry && Date.now() - entry.builtAt < PROJIDX_TTL_MS) return entry;
+  const building = buildProjectsIndex(client, { driveId, projekteItemId, projektePath })
+    .then(({ rows, folders }) => ({ rows, folders, builtAt: Date.now(), building: null }));
+  _projIndex.set(key, { rows: entry?.rows || [], folders: entry?.folders || [], builtAt: entry?.builtAt || 0, building });
+  try {
+    const built = await building;
+    _projIndex.set(key, built);
+    if (_projIndex.size > 50) { for (const k of _projIndex.keys()) { if (k !== key) _projIndex.delete(k); } } // Backstop
+    return built;
+  } catch (e) {
+    const cur = _projIndex.get(key);
+    if (cur?.building === building) { if (entry?.builtAt) _projIndex.set(key, entry); else _projIndex.delete(key); }
     throw e;
   }
 }
@@ -606,12 +634,96 @@ const DATENRAEUME_MAIN = `<div class="dr">
   .dr-badge.no{background:#f2f2f2;color:var(--mut)}
 </style>
 <script src="/datenraeume.js" defer></script>`;
+// Seite „Projekte": Übersichtstabelle (Kern-Abdeckung + Dokumentzahl je A-Kennung) + Projektseite.
+// Gerüst im festen Shell-#view; Logik lädt /projekte.js (holt /api/workspace + /api/projekte?full=1
+// + /api/projekt?full=1). Nur lesen, kein KI-Knopf. Design nach Tokens, Tabelle mit schwarzem Kopf.
+const PROJEKTE_MAIN = `<div class="pr">
+  <div class="pr-top">
+    <div class="pr-filters">
+      <label class="pr-chk"><input type="checkbox" id="pr-f-core"> nur Kern unvollständig</label>
+      <label class="pr-chk"><input type="checkbox" id="pr-f-old"> nur alte Struktur</label>
+    </div>
+    <span class="pr-spacer"></span>
+    <span class="pr-stand" id="pr-stand">Stand: —</span>
+    <button class="btn ghost" id="pr-reload" type="button">↻ Neu laden</button>
+  </div>
+  <div id="pr-body"><div class="pr-note">Lädt …</div></div>
+</div>
+<style>
+  .pr{max-width:1280px}
+  .pr [hidden]{display:none!important}
+  .pr-top{display:flex;align-items:center;gap:14px;margin-bottom:14px;flex-wrap:wrap}
+  .pr-filters{display:flex;gap:16px;flex-wrap:wrap}
+  .pr-chk{display:flex;align-items:center;gap:7px;font-size:13px;color:var(--mut);cursor:pointer;user-select:none}
+  .pr-chk input{accent-color:var(--acc2);cursor:pointer}
+  .pr-spacer{flex:1}
+  .pr-stand{font-size:12px;color:var(--mut2);white-space:nowrap}
+  .pr-note{color:var(--mut);padding:16px 4px}
+  .pr-err{color:var(--bad);padding:16px 4px}
+  /* Übersicht */
+  .pr-scroll{overflow-x:auto;border:1px solid var(--line);border-radius:var(--r-card);box-shadow:var(--shadow)}
+  .pr-table{width:100%;border-collapse:collapse;background:#fff;font-size:12.5px}
+  .pr-table thead th{background:var(--ink);color:#fff;text-align:left;font-weight:600;font-size:11px;
+    padding:10px 10px;text-transform:uppercase;letter-spacing:.4px;white-space:nowrap;position:sticky;top:0}
+  .pr-table thead th.pr-a{text-align:center;padding:10px 6px;cursor:help}
+  .pr-table tbody td{padding:8px 10px;border-top:1px solid var(--line2);vertical-align:middle;white-space:nowrap}
+  .pr-table tbody tr{cursor:pointer}
+  .pr-table tbody tr:hover{background:var(--soft2)}
+  .pr-pid{font-weight:600;color:var(--txt)}
+  .pr-kz{color:var(--txt)}
+  .pr-city{color:var(--mut)}
+  .pr-a-cell{text-align:center;color:var(--mut);padding:6px}
+  .pr-a-has{color:var(--txt);font-weight:600}
+  .pr-a-zero{color:var(--mut2)}
+  /* Kernanalyse ohne Dokument — weiß mit gestricheltem Rand (Warnung, wie im Prototyp) */
+  .pr-a-warn{background:#fff;border:1px dashed var(--warn);border-radius:var(--r-list);color:var(--warn);font-weight:700}
+  .pr-core{font-weight:600}
+  .pr-core.bad{color:var(--warn)}
+  .pr-core.ok{color:var(--ok)}
+  .pr-badge{display:inline-block;margin-left:8px;padding:1px 8px;border-radius:var(--r-list);font-size:10.5px;
+    font-weight:700;text-transform:uppercase;letter-spacing:.4px;vertical-align:middle}
+  .pr-badge.old{background:#f2f2f2;color:var(--mut)}
+  .pr-num{color:var(--mut);text-align:right}
+  /* Projektseite (Detail) */
+  .pr-back{margin-bottom:14px}
+  .pr-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:6px}
+  .pr-head h3{margin:0;font-size:20px;font-weight:700;color:#000}
+  .pr-head .pr-sub{color:var(--mut);font-size:14px}
+  .pr-actions{display:flex;gap:9px;flex-wrap:wrap;margin:12px 0 20px}
+  .pr-summary{color:var(--mut);font-size:13px;margin-bottom:18px}
+  .pr-sec{background:#fff;border:1px solid var(--line);border-radius:var(--r-card);box-shadow:var(--shadow);
+    padding:14px 16px;margin-bottom:12px}
+  .pr-sec.warn{border:1px dashed var(--warn)}
+  .pr-sec h4{margin:0 0 4px;font-size:14px;font-weight:600;color:var(--txt)}
+  .pr-sec .pr-code{color:var(--mut2);font-weight:700;margin-right:6px}
+  .pr-sec .pr-kern{display:inline-block;margin-left:8px;font-size:10.5px;font-weight:700;text-transform:uppercase;
+    letter-spacing:.4px;color:var(--acc2);background:var(--soft);padding:1px 7px;border-radius:var(--r-list)}
+  .pr-empty{color:var(--warn);font-size:13px;margin-top:6px}
+  .pr-doclist{list-style:none;margin:8px 0 0;padding:0}
+  .pr-doclist li{display:flex;align-items:center;gap:10px;padding:6px 0;border-top:1px solid var(--line2);font-size:13px}
+  .pr-doclist li:first-child{border-top:0}
+  .pr-doclist .d-name{flex:1;min-width:0;color:var(--txt);overflow-wrap:anywhere}
+  .pr-doclist .d-date{color:var(--mut);white-space:nowrap}
+  .pr-doclist .d-open{font-size:12px;padding:4px 9px;white-space:nowrap}
+  .pr-secgrid{margin-top:18px}
+  .pr-seclabel{font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:var(--mut2);margin:22px 0 10px}
+</style>
+<script src="/projekte.js" defer></script>`;
 function sendHtml(res, html) { res.set("content-type", "text/html; charset=utf-8"); res.send(html); }
 
-// Aktive Seiten (echte, direkt aufrufbare Adressen; vorerst leer) — außer „Datenräume" (eigene Seite unten).
+// Aktive Seiten (echte, direkt aufrufbare Adressen; vorerst leer) — außer „Datenräume"/„Projekte" (eigene Seiten unten).
 for (const it of NAV_ACTIVE)
-  if (it.key !== "datenraeume")
+  if (it.key !== "datenraeume" && it.key !== "projekte")
     app.get(it.path, requireAuth, (_req, res) => sendHtml(res, renderPage(it.key, it.label, activeMain())));
+
+// „Projekte": Übersicht + Projektseite (in der festen Shell). Gegated wie alle Seiten.
+app.get("/projekte", requireAuth, (_req, res) =>
+  sendHtml(res, renderPage("projekte", "Projekte", PROJEKTE_MAIN)));
+app.get("/projekte.js", (_req, res) => {
+  res.set("content-type", "application/javascript; charset=utf-8");
+  res.set("cache-control", "no-store");
+  res.send(readFileSync(resolve(__dir, "public/projekte.js"), "utf8"));
+});
 
 // „Datenräume": Ordner-/Datei-Browser je Gesellschaft (in der festen Shell). Gegated wie alle Seiten.
 app.get("/datenraeume", requireAuth, (_req, res) =>
@@ -847,6 +959,16 @@ app.get("/api/projekte", requireAuth, limit(navBudget, "Zu viele Anfragen — ku
     if (!root) return res.status(503).json({ error: reason || "Workspace-Wurzel nicht auflösbar." });
     const target = await descend(client, root, segments);
     const catalog = await loadAnalysisCatalog(client, root);
+    // full=1 → reiche Übersicht für die Seite „Projekte" (Dokumentzahlen aus dem gemeinsamen
+    // Datei-Index; dynamische A-Spalten aus dem live gelesenen Katalog → A18 erscheint von selbst).
+    if (req.query.full === "1") {
+      const principal = principalOf(req);
+      const projektePath = segments.join("/");
+      const idx = await getProjectsIndex(client, principal, { driveId: root.driveId, projekteItemId: target.id, projektePath, refresh: req.query.refresh === "1" });
+      const projects = projectsOverview({ index: idx, projektePath, catalog });
+      return res.json({ path: projektePath, catalog, projects, indexBuiltAt: new Date(idx.builtAt).toISOString() });
+    }
+    // Legacy (Übergangsseite /workspace) — unverändert.
     const projects = await listProjectsWithStatus(client, { driveId: root.driveId, projekteItemId: target.id, catalog });
     res.json({ path: segments.join("/"), catalogSize: catalog.length, projects });
   } catch (e) {
@@ -867,6 +989,16 @@ app.get("/api/projekt", requireAuth, limit(navBudget, "Zu viele Anfragen — kur
     if (!root) return res.status(503).json({ error: reason || "Workspace-Wurzel nicht auflösbar." });
     const target = await descend(client, root, segments);
     const catalog = await loadAnalysisCatalog(client, root);
+    // full=1 → Detail für die Seite „Projekte": Dokumentlisten je A-Kennung aus dem Datei-Index.
+    if (req.query.full === "1") {
+      const principal = principalOf(req);
+      const projektePath = segments.slice(0, -1).join("/");
+      const parent = await descend(client, root, segments.slice(0, -1)); // 04_Projekte (für den gemeinsamen Index-Schlüssel)
+      const idx = await getProjectsIndex(client, principal, { driveId: root.driveId, projekteItemId: parent.id, projektePath, refresh: req.query.refresh === "1" });
+      const status = projectDetail({ index: idx, projektePath, projectName: target.name, catalog });
+      return res.json({ path: segments.join("/"), catalog, indexBuiltAt: new Date(idx.builtAt).toISOString(), ...status });
+    }
+    // Legacy (Übergangsseite /workspace) — unverändert.
     const status = await buildProjectStatus(client, { driveId: root.driveId, projectItemId: target.id, projectName: target.name, catalog });
     res.json({ path: segments.join("/"), catalogSize: catalog.length, ...status });
   } catch (e) {

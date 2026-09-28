@@ -189,6 +189,15 @@
     }
   }
 
+  // Startadresse aus der Web-Adresse (#/Gesellschaft/…) — so kann eine andere Seite (z. B.
+  // „Projekte" → „Im Datenraum anzeigen") direkt in einen Ordner springen. Sonst null.
+  function initialPathFromHash() {
+    const h = (location.hash || "").replace(/^#\/?/, "");
+    if (!h) return null;
+    const segs = h.split("/").map((s) => { try { return decodeURIComponent(s); } catch { return s; } }).filter(Boolean);
+    return segs.length ? segs : null;
+  }
+
   async function boot() {
     const w = await api("/api/workspace");
     if (!w || w.error || !w.root) {
@@ -198,7 +207,14 @@
     S.companies = (w.nav || []).map((n) => n.name);
     if (!S.companies.length) { $("#dr-body").innerHTML = `<div class="dr-note">Keine Gesellschaft konfiguriert.</div>`; return; }
     $("#dr-company").innerHTML = S.companies.map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join("");
-    load([S.companies[0]]);
+    // Startadresse (nur wenn ihre Gesellschaft bekannt ist) — sonst die erste Gesellschaft.
+    const initial = initialPathFromHash();
+    if (initial && S.companies.includes(initial[0])) {
+      $("#dr-company").value = initial[0];
+      load(initial);
+    } else {
+      load([S.companies[0]]);
+    }
   }
 
   // Delegierte Klicks: Treffer-Pfad (springen), Brotkrumen, Ordner öffnen (nur im Browser).
