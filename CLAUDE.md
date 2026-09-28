@@ -87,6 +87,16 @@ Output: strukturiert, mit **Quellenbezug**; Entscheidungs-Unterstützung mit Men
 Die App schreibt ihre eigenen Daten — Analyse-Ergebnisse, Dokument-Index, Status, abgeleitete Metadaten aus SharePoint — in eine **dedizierte Postgres auf dem VPS** (Coolify, DB `nereo_app`). Dient als **Zwischenspeicher** für alles, was aus SharePoint analysiert wird.
 **Enthält keine Original-Dokumente** (die bleiben in SharePoint) und **ist getrennt von der LogTo-DB** (siehe §2). *(Entscheidung 2026-06: self-hosted statt Supabase — Daten bleiben auf dem VPS, passt zur CH/EU-Datenresidenz.)*
 
+### Design & Marke — Design-Tokens + Logos (LIVE seit 2026-09-28)
+Helles nereo-CI (Vascos Klick-Prototyp): weiß/`#f7f7f7` + Schwarz + Türkis-Akzent. Umgesetzt in App-Dashboard + Startseite; **Login (LogTo) bleibt unangetastet** (Bauregel §1).
+
+**Design-Tokens — zentrale Stelle je Instanz:** App im `:root` von `apps/app/src/public/dashboard.html`, Landing im Inline-Style von `apps/landing/src/server.js`. *Ein* verbindlicher Satz, in beiden **identisch**. Es gibt **keine** gemeinsame Laufzeit-Datei für alle drei Instanzen (Landing + App bauen als getrennte Container, Login = LogTo/extern) — eine geteilte Datei ginge nur mit Architektur-Änderung → verboten.
+- Farben: Hintergrund `#f7f7f7` · Karten `#fff` · Schwarz (Text/Kopf/Primärknopf) `#000`, Fließtext `#111` · Linie `#dedede`/hell `#eeeeee` · gedämpft `#666`/`#8a8a8a` · **Akzent Türkis `#06eddb`** · Türkis weich `rgba(6,237,219,.12)`/sehr weich `…,.055`.
+- Schatten Karten `0 8px 26px rgba(0,0,0,.055)`. Ecken **5px** (Karten/Knöpfe), **4px** (Listen/Etiketten) — keine Pillen, keine Verläufe.
+- Schrift **Inter, self-hosted** (`inter.woff2`, variabel/latin) — **NICHT** Google Fonts (Datenschutz); je Instanz über `/inter.woff2` ausgeliefert. Grund 13px, `letter-spacing:-.005em`; Überschrift 23px/weight ~760.
+
+**Logo-Ordner (einziger Ort):** SharePoint-CI `nereo Development Partners / nereo.development / 01_Unternehmen / 05_Strategie / 02_CI_Corporate_Identity / 02_Logo / 02_Export_SVG`. Verwendet: `Nereo_Logo_Black_ColorDot.svg` (Wortmarke + türkiser Punkt, auf Weiß) und `Nereo_n_Black.svg` (Favicon). Read-only über `graph-client → downloadItem()` geholt, dann in `apps/app/src/public/` bzw. `apps/landing/src/` abgelegt und per Route ausgeliefert. Lockup: kleine „nereo"-Wortmarke + **größeres** „OS" (Großbuchstaben, dünn) direkt neben dem Punkt, Unterkante bündig. **App-Seitenleiste WEISS** (nicht schwarz).
+
 ---
 
 ## 4. Deployment
@@ -165,5 +175,5 @@ Verbindlich für alle künftigen Arbeiten an diesem Repo. Bei Konflikt mit einer
 5. **Ein Microsoft-Tor.** Alle Graph-Zugriffe laufen über die zentrale Stelle (`graph-client`), damit dort später eine Rechteprüfung ergänzt werden kann.
 6. **Keine Geheimnisse in Repo-Dateien.** Keine echten Personaldaten als Testdaten.
 7. **Arbeitsweise:** erst Plan in einfacher Sprache → auf Mikes OK warten → bauen. Nie ohne OK committen oder pushen. Nach dem Bauen: sagen, wie Mike es testet.
-8. **Oberfläche auf Deutsch.** Design nach den nereo-Design-Tokens (werden noch angelegt).
+8. **Oberfläche auf Deutsch.** Design nach den **nereo-Design-Tokens** (helle CI, angelegt 2026-09-28 — siehe §3 „Design & Marke"): Akzent Türkis `#06eddb`, Inter self-hosted (kein Google Fonts), Ecken 5/4px, keine Verläufe.
 9. **Struktur folgt `_KONVENTIONEN.md`** in der Ablage. Kennungen: Projekt-ID `JJJJ-NNN`, Analysekennungen `A00–A17` aus `_ANALYSEKATALOG.md`. Diese Dateien **lesen, nicht abschreiben**.
