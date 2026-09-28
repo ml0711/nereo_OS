@@ -10,7 +10,7 @@ import crypto from "node:crypto";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { extractDataRooms, summarizeDataRooms, isDataRoomName } from "../../../packages/graph-client/src/datarooms.js";
+import { extractDataRooms, summarizeDataRooms } from "../../../packages/graph-client/src/datarooms.js";
 import { createGraphClient, graphConfigFromEnv } from "../../../packages/graph-client/src/index.js";
 import { loadLatestIndex, loadAnalyses, logWrite, loadWriteAudit, pingDb,
   loadSubscriptionById, loadSubscriptionByDrive, loadActiveSubscriptions, markDirty, claimDirtySubscription, claimSubscriptionForSync, finishProcessing } from "../../../packages/graph-client/src/index-store.js";
@@ -603,13 +603,17 @@ app.get("/api/fs", requireAuth, limit(navBudget, "Zu viele Navigations-Anfragen 
     const isRoot = segments.length === 0;
     const target = await descend(client, root, segments);
     const kids = await client.listChildren(root.driveId, target.id);
-    const childFolderNames = kids.filter((k) => k.folder).map((k) => k.name);
+    // An der Wurzel NUR die konfigurierten Gesellschaften zeigen (wie die Seitenleiste) —
+    // sonst tauchten hier "Projekte_alt"/"_VORLAGE_Gesellschaft" auf. Tiefer: alles (minus
+    // zentraler Ausschlüsse, die listChildren schon entfernt hat). Bauregel §2/§3.
+    const visibleKids = isRoot ? pickCompanies(kids).map((x) => x.node) : kids;
+    const childFolderNames = visibleKids.filter((k) => k.folder).map((k) => k.name);
     const relPath = segments.join("/");
     const ctx = { relPath, name: isRoot ? root.name : target.name, segments, depth: segments.length, isRoot, childFolderNames };
     const cap = serializeCapability(resolveCapability(ctx), { writeEnabled: GRAPH_WRITE_ENABLED });
     const breadcrumb = [{ name: root.name, path: "" }];
     for (let i = 0; i < segments.length; i++) breadcrumb.push({ name: segments[i], path: segments.slice(0, i + 1).join("/") });
-    const children = kids
+    const children = visibleKids
       .map((k) => ({
         name: k.name,
         path: [...segments, k.name].join("/"),
@@ -620,10 +624,9 @@ app.get("/api/fs", requireAuth, limit(navBudget, "Zu viele Navigations-Anfragen 
         childCount: k.folder?.childCount ?? null,
         modified: k.lastModifiedDateTime ?? null,
         ext: k.file ? (k.name.includes(".") ? k.name.split(".").pop().toLowerCase() : "") : null,
-        // Inline-Analyse-Button nur an Ordnern, die schon am Namen als Datenraum erkennbar sind
-        // (Struktur-Signal bräuchte einen Extra-Graph-Call pro Kind). Struktur-Datenräume bleiben
-        // über die Datenraum-View beim Reinnavigieren analysierbar.
-        analyzable: k.folder ? isDataRoomName(k.name) : false,
+        // KI-Analyse ist in dieser Ausbaustufe pausiert (Schritt B: Projekt-Analysekatalog
+        // A00–A17 statt altem Datenraum-Schema 00–16). Bis dahin kein Inline-Analyse-Knopf.
+        analyzable: false,
       }))
       .sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name, "de") : a.type === "folder" ? -1 : 1));
     res.json({

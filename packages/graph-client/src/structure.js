@@ -1,125 +1,81 @@
 // "Business as Code": die Ordner→Funktion-Abbildung.
 // Je nachdem WO in der gespiegelten SharePoint-Struktur man steht, gibt es eine andere
-// View und andere Aktionen. Diese Datei ist die EINE deklarative Quelle dieser Logik.
-// Rein datengetrieben — keine Express/Claude-Abhängigkeit. Reuse aus datarooms.js.
-// Siehe ../../CLAUDE.md §1/§3.
+// View und ein anderes Etikett. Diese Datei ist die EINE deklarative Quelle dieser Logik.
+// Rein datengetrieben — keine Express/Claude-Abhängigkeit. Siehe ../../CLAUDE.md §3.
+//
+// Struktur (Stand 2026-09, aus _KONVENTIONEN.md / _ANALYSEKATALOG.md in der Ablage —
+// gelesen, nicht abgeschrieben, Bauregel §9):
+//   Wurzel → Gesellschaft (nereo.Group / nereo.development)
+//     → 01_Unternehmen · 02_Finanzen · 03_Assets · 04_Projekte · 99_Archiv
+//   04_Projekte → Projekt (JJJJ-NNN_Kuerzel_Stadt)
+//     → 00_Steuerung · 01_Datenraum · 02_Analysen · 03_Konzept · 04_Baurecht_Verfahren · …
+//   02_Analysen → A00–A17 (Analysekatalog).
+//
+// WICHTIG: Die KI-Analyse ist hier bewusst PAUSIERT (keine `analyze`-Aktion). Die Umstellung
+// der Analyse-Logik vom alten Datenraum-Schema 00–16 auf den Projekt-Analysekatalog A00–A17
+// ist ein eigener, separat geplanter Schritt (Schritt B). Bis dahin ist die Navigation
+// reine Ansicht: richtige Etiketten je Ebene, keine Analyse.
 
-import { STANDARD_CATEGORIES, isDataRoomName } from "./datarooms.js";
+// Schreibaktionen: sichtbar als "kommt bald", schalten nichts scharf (Schreibmacht ist
+// abgesichert, kein Auto-Write — CLAUDE.md §2). `future:true` → UI zeigt sie deaktiviert.
+const CREATE_FOLDER = { id: "create-folder", label: "Ordner anlegen", kind: "write", write: "folder", enabled: "writeEnabled", future: true };
+const UPLOAD = { id: "upload", label: "Datei hochladen", kind: "write", write: "upload", enabled: "writeEnabled", future: true };
 
-const SCHEMA_PREFIXES = new Set(STANDARD_CATEGORIES.map((c) => c.num)); // {"00".."16"}
-
-// Kind-Ordnername → gültiges Schema-Präfix ("NN_"/"NN "/"NN-"), sonst null.
-function categoryPrefixOf(name) {
-  const m = /^(\d{2})[ _\-]/.exec(name || "");
-  return m && SCHEMA_PREFIXES.has(m[1]) ? m[1] : null;
-}
-
-/**
- * Datenraum-Erkennung Signal B (Struktur): ≥3 verschiedene NN_-Kinder
- * (== usesStandard-Schwelle in datarooms.js). childFolderNames kommt gratis aus dem
- * listChildren, das der Resolver für die View ohnehin macht — kein zweiter Graph-Call.
- * ACHTUNG: greift bewusst NUR außerhalb der Projekt-/Unternehmens-Wurzeln (siehe Reihenfolge
- * der CAPABILITIES) — sonst würde der Projektordner 01_Projekte mit seinen Modul-Ordnern
- * (01_…,02_Modul…,03_…) fälschlich als Datenraum klassifiziert.
- */
-export function hasDataRoomStructure(ctx) {
-  if (ctx.isRoot) return false;
-  const distinct = new Set();
-  for (const n of ctx.childFolderNames ?? []) {
-    const p = categoryPrefixOf(n);
-    if (p) distinct.add(p);
-  }
-  return distinct.size >= 3;
-}
-
-/** Datenraum-Erkennung Signal A (Name), z. B. "Beispiel_Datenraum_v3". */
-export function isDataRoomByName(ctx) {
-  return !ctx.isRoot && isDataRoomName(ctx.name);
-}
-
-/** Kombiniert (für Tests/externe Nutzung): Datenraum per Name ODER per Struktur. */
-export function looksLikeDataRoomLive(ctx) {
-  return isDataRoomByName(ctx) || hasDataRoomStructure(ctx);
-}
-
-// Gemeinsame Datenraum-View (zweimal referenziert: per Name hoch, per Struktur niedrig priorisiert).
-const DATAROOM = {
-  id: "dataroom",
-  label: "Datenraum",
-  icon: "folder-check",
-  view: "dataroom",
-  actions: [
-    { id: "analyze", label: "KI-Analyse", kind: "analyze", enabled: "always" },
-    { id: "create-folder", label: "Kategorie anlegen", kind: "write", write: "folder", enabled: "writeEnabled", future: true },
-    { id: "upload", label: "Dokument hochladen", kind: "write", write: "upload", enabled: "writeEnabled", future: true },
-  ],
-  analysis: { strategy: "live-room", schema: "00-16" },
-};
+// Erkennung am AKTUELLEN Ordnernamen (c.name = wo man steht). Sonderzeichen-immun und
+// unabhängig vom Gesellschafts-Präfix im Pfad (die Ebene "Gesellschaft" liegt davor).
+const isProjectId = (name) => /^\d{4}-\d{3}[ _]/.test(name || ""); // JJJJ-NNN_Kuerzel_Stadt
+const isAnalysisId = (name) => /^A\d{2}[ _]/.test(name || ""); // A08_Nutzung_Varianten
+const nameIs = (re) => (c) => re.test(c.name || "");
 
 /**
  * ctx = { relPath, name, segments, depth, isRoot, childFolderNames }
- *   relPath: Pfad relativ zur WURZEL ("" = Wurzel selbst), ohne führenden Slash.
- *   childFolderNames: Namen der Unterordner an dieser Position (für Datenraum-Struktur-Erkennung).
+ *   name  : Name des Ordners, in dem man steht (bzw. der Sidebar-Eintrag).
+ *   depth : Anzahl Pfadsegmente ab Wurzel (eine Gesellschaft liegt bei depth === 1).
  *
  * Reihenfolge ist bewusst (erste passende Regel gewinnt; `folder` ist garantierter Fallback):
  *   1. workspace-root  — die Wurzel selbst
- *   2. dataroom (Name) — explizit benannter Datenraum schlägt alles (auch innerhalb Projekte)
- *   3. projects        — die zwei Projekt-Wurzeln + ihr Teilbaum
- *   4. company         — 00_Unternehmen + Teilbaum
- *   5. dataroom (Struktur) — unbenannter, aber schema-strukturierter Datenraum AUSSERHALB 2–4
- *   6. folder          — generischer Fallback
+ *   2. projekt         — ein einzelnes Projekt (JJJJ-NNN_…); schlägt die Bereichsnamen
+ *   3. analyse         — ein einzelner Analyseordner (A00–A17)
+ *   4.–10. Bereichsordner per exaktem Namen (Unternehmen/Finanzen/Assets/Projekte/Analysen/Datenraum/Archiv)
+ *   11. gesellschaft   — Top-Level-Ordner unter der Wurzel (eine Gesellschaft)
+ *   12. folder         — generischer Fallback (immer letzter)
  */
 export const CAPABILITIES = [
-  {
-    id: "workspace-root",
-    label: "Übersicht",
-    icon: "home",
-    view: "workspace-root",
-    match: (c) => c.isRoot, // relPath === ""
-    actions: [
-      { id: "create-folder", label: "Bereich anlegen", kind: "write", write: "folder", enabled: "writeEnabled", future: true },
-    ],
-    analysis: null,
-  },
-  { ...DATAROOM, match: (c) => isDataRoomByName(c) },
-  {
-    id: "projects",
-    label: "Projekte",
-    icon: "buildings",
-    view: "projects",
-    // Beide projektartigen Bäume (01_Projekte UND Projekte). Steht VOR dataroom-Struktur,
-    // damit der Projekt-Wurzelordner nicht an der NN_-Heuristik hängenbleibt.
-    match: (c) => /^(01_Projekte|Projekte)(\/|$)/i.test(c.relPath),
-    actions: [
-      { id: "analyze-project", label: "Projekt analysieren", kind: "analyze", enabled: "always" },
-      { id: "create-folder", label: "Projekt/Ordner anlegen", kind: "write", write: "folder", enabled: "writeEnabled", future: true },
-    ],
-    analysis: { strategy: "live-room", schema: "00-16" },
-  },
-  {
-    id: "company",
-    label: "Unternehmen",
-    icon: "briefcase",
-    view: "company",
-    match: (c) => /^00_Unternehmen(\/|$)/i.test(c.relPath),
-    actions: [
-      { id: "create-folder", label: "Ordner anlegen", kind: "write", write: "folder", enabled: "writeEnabled", future: true },
-    ],
-    analysis: null,
-  },
-  { ...DATAROOM, match: (c) => hasDataRoomStructure(c) },
-  {
-    id: "folder",
-    label: "Ordner",
-    icon: "folder",
-    view: "folder",
-    match: () => true, // garantierter Fallback — IMMER letzter
-    actions: [
-      { id: "create-folder", label: "Ordner anlegen", kind: "write", write: "folder", enabled: "writeEnabled", future: true },
-      { id: "upload", label: "Datei hochladen", kind: "write", write: "upload", enabled: "writeEnabled", future: true },
-    ],
-    analysis: null,
-  },
+  { id: "workspace-root", label: "Übersicht", icon: "home", view: "workspace-root",
+    match: (c) => c.isRoot, actions: [CREATE_FOLDER], analysis: null },
+
+  { id: "projekt", label: "Projekt", icon: "folder-check", view: "projekt",
+    match: (c) => isProjectId(c.name), actions: [CREATE_FOLDER], analysis: null },
+
+  { id: "analyse", label: "Analyse", icon: "sparkle", view: "analyse",
+    match: (c) => isAnalysisId(c.name), actions: [CREATE_FOLDER, UPLOAD], analysis: null },
+
+  { id: "unternehmen", label: "Unternehmen", icon: "briefcase", view: "unternehmen",
+    match: nameIs(/^01_Unternehmen$/i), actions: [CREATE_FOLDER], analysis: null },
+
+  { id: "finanzen", label: "Finanzen", icon: "coins", view: "finanzen",
+    match: nameIs(/^02_Finanzen$/i), actions: [CREATE_FOLDER], analysis: null },
+
+  { id: "assets", label: "Assets", icon: "buildings", view: "assets",
+    match: nameIs(/^03_Assets$/i), actions: [CREATE_FOLDER], analysis: null },
+
+  { id: "projekte", label: "Projekte", icon: "buildings", view: "projekte",
+    match: nameIs(/^04_Projekte$/i), actions: [CREATE_FOLDER], analysis: null },
+
+  { id: "analysen", label: "Analysen", icon: "sparkles", view: "analysen",
+    match: nameIs(/^02_Analysen$/i), actions: [CREATE_FOLDER, UPLOAD], analysis: null },
+
+  { id: "datenraum", label: "Datenraum", icon: "folder", view: "datenraum",
+    match: nameIs(/^01_Datenraum$/i), actions: [CREATE_FOLDER, UPLOAD], analysis: null },
+
+  { id: "archiv", label: "Archiv", icon: "archive", view: "archiv",
+    match: nameIs(/^99_Archiv$/i), actions: [CREATE_FOLDER], analysis: null },
+
+  { id: "gesellschaft", label: "Gesellschaft", icon: "building", view: "gesellschaft",
+    match: (c) => c.depth === 1, actions: [CREATE_FOLDER], analysis: null },
+
+  { id: "folder", label: "Ordner", icon: "folder", view: "folder",
+    match: () => true, actions: [CREATE_FOLDER, UPLOAD], analysis: null },
 ];
 
 /** Liefert die passende Capability für eine Position im Baum. */
@@ -130,7 +86,7 @@ export function resolveCapability(ctx) {
 /**
  * Serialisiert eine Capability für die API: entfernt die match-Funktion und löst
  * actions[].enabled zum realen Boolean auf.
- *  "always"        → immer true (z. B. KI-Analyse)
+ *  "always"        → immer true
  *  "writeEnabled"  → nur wenn Schreibmacht freigeschaltet (Kill-Switch + Graph-Config ok)
  * `future:true` bleibt erhalten → UI zeigt "kommt bald", schaltet aber nichts scharf.
  */

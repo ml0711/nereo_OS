@@ -276,7 +276,10 @@ const esc=(s="")=>String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"
 // Nur http(s)-Links zulassen — esc() neutralisiert javascript:/data: NICHT (Defense-in-Depth).
 const safeHref=(u)=>/^https?:\/\//i.test(String(u||""))?u:null;
 const STATUS_COLOR={Aktiv:"#39c07a",Pipeline:"#06eddb",Vorlage:"#e6a23c",Dropped:"#e15b5b"};
-const CAP_ICON={"workspace-root":"⌂",dataroom:"▣",projects:"◧",company:"▤",folder:"▸"};
+const CAP_ICON={"workspace-root":"⌂",
+  gesellschaft:"◈",unternehmen:"▤",finanzen:"▦",assets:"▧",
+  projekte:"◧",projekt:"▣",analysen:"✦",analyse:"✧",datenraum:"▥",archiv:"▨",
+  dataroom:"▣",projects:"◧",company:"▤",folder:"▸"};
 
 // Zentraler Zustand = Position im gespiegelten Baum + Overlays.
 const STATE={ root:null, sections:[], here:null, portfolio:null, analyses:{}, _navSeq:0 };
@@ -378,20 +381,12 @@ function browserHtml(children){
 
 // ---------- Views je Capability ----------
 function rootViewHtml(){
-  let kpi="";
-  const p=STATE.portfolio;
-  if(p&&p.summary){
-    const s=p.summary;
-    kpi=`<div class="kpis">`+[
-      ["Datenräume",s.total],["Dateien",(s.files||0).toLocaleString("de-DE")],["Volumen",fmtGB(s.bytes||0)],
-      ["Ø Vollständigkeit",s.avgCompleteness!=null?s.avgCompleteness+" %":"—"],["KI-analysiert",`${p.analyzed||0} / ${s.total}`],
-    ].map(([l,n])=>`<div class="kpi"><div class="n">${n}</div><div class="l">${esc(l)}</div></div>`).join("")+`</div>`;
-  }
-  const ts=p&&p.generatedAt?fmtDate(p.generatedAt):null;
-  const stale=ts?`<div class="note" style="margin:-14px 0 18px">Kennzahlen: Index-Stand vom ${ts}${p.source?` (${p.source==="postgres"?"App-Postgres":"Datei"})`:""} · Navigation ist live</div>`:"";
+  // Kennzahlen nach altem Datenraum-Schema (00–16) sind hier bewusst AUS — sie passen nicht
+  // mehr zur neuen Projektstruktur. Sie kommen mit der Projekt-Analyse (A00–A17) zurück (Schritt B).
   const folders=STATE.here.children.filter(c=>c.type==="folder");
-  return `<div class="page-sub">Spiegelt die SharePoint-Struktur live. Wähle einen Bereich — die verfügbaren Funktionen richten sich nach dem Ordner.</div>
-    ${kpi}${stale}<div class="section-label">Bereiche</div>${tilesHtml(folders,{typed:true})}${filesHtml(STATE.here.children.filter(c=>c.type==="file"))}`;
+  const files=STATE.here.children.filter(c=>c.type==="file");
+  return `<div class="page-sub">Spiegelt die Ablage-Struktur live. Wähle eine Gesellschaft — die Ansichten richten sich nach dem Ordner.</div>
+    <div class="section-label">Gesellschaften</div>${tilesHtml(folders,{typed:true})}${filesHtml(files)}`;
 }
 function projectsViewHtml(){
   const folders=STATE.here.children.filter(c=>c.type==="folder"), files=STATE.here.children.filter(c=>c.type==="file");
@@ -520,7 +515,7 @@ async function loadPortfolio(){
 }
 
 (async()=>{
-  loadPortfolio(); // parallel, nicht-blockierend (Overlay-Daten)
+  // KPIs nach altem Schema (loadPortfolio) sind pausiert — siehe rootViewHtml (Schritt B).
   const ok=await bootWorkspace();
   if(!ok) return;
   window.addEventListener("popstate",()=>navigate(hashPath(),{push:false}));
