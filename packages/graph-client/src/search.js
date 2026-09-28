@@ -110,3 +110,25 @@ export function computeFacets(rows, catalog = []) {
     docTypes: [...docTypes].sort((x, y) => x.localeCompare(y, "de")),
   };
 }
+
+// ---------- Dashboard-Auswertung (nach ÄNDERUNGSdatum) ----------
+// Die Startseite braucht „neu in den letzten 7 Tagen" und „zuletzt geändert" — beides über das
+// technische Änderungsdatum (modified), NICHT über das Dokumentdatum. Rein/testbar; arbeitet auf
+// denselben Index-Zeilen wie die Suche, damit die Zahlen in der ganzen App gleich sind.
+
+const _mtime = (s) => { const t = Date.parse(s || ""); return isNaN(t) ? -Infinity : t; };
+const _byModifiedDesc = (a, b) => _mtime(b.modified) - _mtime(a.modified);
+
+/** Die zuletzt geänderten Dateien (nach `modified`, absteigend). Rein.
+ *  @returns {Array} bis zu `limit` Zeilen (ohne interne Felder). */
+export function latestModified(rows, limit = 10) {
+  return (rows ?? []).slice().sort(_byModifiedDesc).slice(0, Math.max(0, limit)).map(stripInternal);
+}
+
+/** Dateien, die seit `sinceMs` (ms seit Epoch) geändert wurden — neueste zuerst. Rein.
+ *  @returns {{ total:number, rows:Array }} total = alle im Zeitfenster, rows = erste `limit`. */
+export function recentlyModified(rows, { sinceMs = 0, limit = 500 } = {}) {
+  const hits = (rows ?? []).filter((r) => _mtime(r?.modified) >= sinceMs);
+  hits.sort(_byModifiedDesc);
+  return { total: hits.length, rows: hits.slice(0, Math.max(0, limit)).map(stripInternal) };
+}

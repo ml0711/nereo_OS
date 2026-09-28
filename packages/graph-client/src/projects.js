@@ -184,6 +184,35 @@ export function docsByAnalysisFromRows(projectRows, catalog) {
   return { analysen, extraCodes, unsorted };
 }
 
+/** Alle „zu prüfen"-Dateien (_UNSORTIERT_Pruefen) über ALLE Projekte, mit Projektbezug — für die
+ *  Startseite. Nutzt DIESELBE _UNSORTIERT_Pruefen-Erkennung wie die Projekt-Kennzahlen (isUnsortedRow),
+ *  also keine zweite Definition → die Summe deckt sich mit den unsortedCount der Übersicht. Nur Dateien
+ *  unter einem echten Projektordner (JJJJ-NNN_…). Neueste zuerst (Dokumentdatum, sonst geändert). Rein. */
+export function unsortedDocsFromIndex({ index, projektePath }) {
+  const rows = index?.rows ?? [];
+  const baseLen = String(projektePath || "").split("/").length; // Segmente bis einschl. 04_Projekte
+  const out = [];
+  for (const r of rows) {
+    if (!isUnsortedRow(r)) continue;
+    const projektName = String(r.path || "").split("/")[baseLen] || null; // Ordner direkt unter 04_Projekte
+    if (!projektName || !isProjectFolder(projektName)) continue;
+    const meta = parseProjectName(projektName);
+    out.push({
+      name: r.name, docDate: r.docDate || null, modified: r.modified || null, webUrl: r.webUrl || null,
+      path: r.path, projektName, projektId: meta.projektId || projektName,
+    });
+  }
+  out.sort((a, b) => String(b.docDate || b.modified || "").localeCompare(String(a.docDate || a.modified || "")));
+  return out;
+}
+
+/** Projekte ohne Änderung seit `ms` Millisekunden (jüngste Dateiänderung älter als `now - ms`).
+ *  Projekte ganz ohne Datei (kein lastModified) zählen NICHT (kein erfundenes Datum). `now` wird
+ *  übergeben → rein/testbar. Die Startseiten-Kachel „ohne Änderung seit 30 Tagen" nutzt genau das. */
+export function staleProjects(projects, { now, ms }) {
+  return (projects ?? []).filter((p) => p.lastModified && (now - Date.parse(p.lastModified)) > ms);
+}
+
 /** Kern-Abdeckung aus den Dokumentzahlen (nicht aus Ordner-Existenz): Kernanalyse „erfüllt",
  *  wenn ≥1 Dokument. Passt zur Hervorhebung „Kernanalyse ohne Dokument". Rein. */
 function coreCoverage(catalog, perCode) {

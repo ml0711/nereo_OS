@@ -12,6 +12,11 @@
 
   const COMPANY = "nereo.development"; // Aufgabe: Projekte liegen unter nereo.development/04_Projekte
   const S = { catalog: [], projects: [], projektePath: "", seq: 0, view: "list" };
+  // „ohne Änderung seit 30 Tagen" — dieselbe Bedingung wie Kachel 5 des Dashboards (Server), damit die
+  // Zahl auf der Kachel und die gefilterte Liste hier übereinstimmen. Projekte ohne Datei (kein
+  // lastModified) zählen NICHT als „ohne Änderung" (kein erfundenes Datum).
+  const STALE_MS = 30 * 24 * 3600 * 1000;
+  const isStale = (p) => !!p.lastModified && (Date.now() - Date.parse(p.lastModified)) > STALE_MS;
 
   async function api(url) {
     const r = await fetch(url, { headers: { accept: "application/json" } });
@@ -35,6 +40,7 @@
     const coreSet = new Set(cat.filter((c) => c.core).map((c) => c.code));
     let list = S.projects.slice();
     if ($("#pr-f-core") && $("#pr-f-core").checked) list = list.filter((p) => p.core.total && p.core.filled < p.core.total);
+    if ($("#pr-f-stale") && $("#pr-f-stale").checked) list = list.filter(isStale);
     if ($("#pr-f-old") && $("#pr-f-old").checked) list = list.filter((p) => p.alteStruktur);
     const body = $("#pr-body");
     if (!list.length) { body.innerHTML = `<div class="pr-note">Keine Projekte für diese Auswahl.</div>`; return; }
@@ -137,7 +143,15 @@
     const comp = (w.nav || []).find((n) => (n.name || "").toLowerCase() === COMPANY.toLowerCase());
     if (!comp) { $("#pr-body").innerHTML = `<div class="pr-err">Gesellschaft „${esc(COMPANY)}" ist nicht sichtbar.</div>`; return; }
     S.projektePath = comp.name + "/04_Projekte";
+    applyHashFilters(); // Deep-Link vom Dashboard: #kern / #stale setzt den passenden Filter vor
     loadOverview();
+  }
+
+  // Deep-Link vom Dashboard: #kern → „Kern unvollständig", #stale → „ohne Änderung seit 30 Tagen".
+  function applyHashFilters() {
+    const h = (location.hash || "").toLowerCase();
+    if (h === "#kern" && $("#pr-f-core")) $("#pr-f-core").checked = true;
+    if (h === "#stale" && $("#pr-f-stale")) $("#pr-f-stale").checked = true;
   }
 
   // Delegierte Klicks: Zeile öffnen, Zurück.
@@ -147,6 +161,7 @@
     if (row) { loadDetail(row.getAttribute("data-name")); return; }
   });
   $("#pr-f-core").addEventListener("change", () => { if (S.view === "list") renderList(); });
+  $("#pr-f-stale").addEventListener("change", () => { if (S.view === "list") renderList(); });
   $("#pr-f-old").addEventListener("change", () => { if (S.view === "list") renderList(); });
   $("#pr-reload").addEventListener("click", () => loadOverview({ refresh: true }));
 

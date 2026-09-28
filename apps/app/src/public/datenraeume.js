@@ -198,6 +198,25 @@
     return segs.length ? segs : null;
   }
 
+  // Deep-Link vom Dashboard: Suchparameter in der Web-Adresse (z. B. ?pattern=nein) → Filter setzen
+  // und die Trefferliste zeigen (über dem Browser). Nutzt dieselbe Suche wie die Bedienelemente, also
+  // stimmt die Trefferzahl mit der Dashboard-Kachel überein. true, wenn eine Suche angewandt wurde.
+  async function applySearchQueryFromUrl() {
+    const p = new URLSearchParams(location.search);
+    const map = { q: "#dr-q", company: "#dr-f-company", projekt: "#dr-f-projekt", a: "#dr-f-a", doctype: "#dr-f-doctype", pattern: "#dr-f-pattern" };
+    if (!Object.keys(map).some((k) => p.get(k))) return false;
+    if (!(await ensureIndex())) return false; // Index + Filteroptionen bereit (dynamische Selects gefüllt)
+    for (const k in map) {
+      const v = p.get(k); if (v == null) continue;
+      const el = $(map[k]); if (!el) continue;
+      if (el.tagName === "SELECT") { if ([...el.options].some((o) => o.value === v)) el.value = v; }
+      else el.value = v;
+    }
+    toggleClear();
+    runSearch();
+    return true;
+  }
+
   async function boot() {
     const w = await api("/api/workspace");
     if (!w || w.error || !w.root) {
@@ -207,7 +226,7 @@
     S.companies = (w.nav || []).map((n) => n.name);
     if (!S.companies.length) { $("#dr-body").innerHTML = `<div class="dr-note">Keine Gesellschaft konfiguriert.</div>`; return; }
     $("#dr-company").innerHTML = S.companies.map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join("");
-    // Startadresse (nur wenn ihre Gesellschaft bekannt ist) — sonst die erste Gesellschaft.
+    // Browser vorbereiten: Startadresse (nur wenn ihre Gesellschaft bekannt ist) — sonst die erste.
     const initial = initialPathFromHash();
     if (initial && S.companies.includes(initial[0])) {
       $("#dr-company").value = initial[0];
@@ -215,6 +234,9 @@
     } else {
       load([S.companies[0]]);
     }
+    // Deep-Link vom Dashboard (?pattern=nein …): Suche über den Browser legen. „Zurücksetzen" zeigt
+    // dann den bereits geladenen Browser.
+    applySearchQueryFromUrl();
   }
 
   // Delegierte Klicks: Treffer-Pfad (springen), Brotkrumen, Ordner öffnen (nur im Browser).

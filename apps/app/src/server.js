@@ -15,9 +15,9 @@ import { createGraphClient, graphConfigFromEnv } from "../../../packages/graph-c
 import { loadLatestIndex, loadAnalyses, logWrite, loadWriteAudit, pingDb,
   loadSubscriptionById, loadSubscriptionByDrive, loadActiveSubscriptions, markDirty, claimDirtySubscription, claimSubscriptionForSync, finishProcessing } from "../../../packages/graph-client/src/index-store.js";
 import { resolveRoot, safeRelSegments, pickCompanies } from "../../../packages/graph-client/src/workspace.js";
-import { loadAnalysisCatalog, buildProjectStatus, listProjectsWithStatus, projectsOverview, projectDetail, buildProjectsIndex } from "../../../packages/graph-client/src/projects.js";
+import { loadAnalysisCatalog, buildProjectStatus, listProjectsWithStatus, projectsOverview, projectDetail, buildProjectsIndex, unsortedDocsFromIndex, staleProjects } from "../../../packages/graph-client/src/projects.js";
 import { docDateFromName, loadDocTypes } from "../../../packages/graph-client/src/naming.js";
-import { buildSearchIndex, queryIndex, computeFacets } from "../../../packages/graph-client/src/search.js";
+import { buildSearchIndex, queryIndex, computeFacets, recentlyModified, latestModified } from "../../../packages/graph-client/src/search.js";
 import { resolveCapability, serializeCapability } from "../../../packages/graph-client/src/structure.js";
 import { deltaThenRewalkAndSave } from "../../../packages/graph-client/src/sync.js";
 
@@ -641,6 +641,7 @@ const PROJEKTE_MAIN = `<div class="pr">
   <div class="pr-top">
     <div class="pr-filters">
       <label class="pr-chk"><input type="checkbox" id="pr-f-core"> nur Kern unvollständig</label>
+      <label class="pr-chk"><input type="checkbox" id="pr-f-stale"> nur ohne Änderung seit 30 Tagen</label>
       <label class="pr-chk"><input type="checkbox" id="pr-f-old"> nur alte Struktur</label>
     </div>
     <span class="pr-spacer"></span>
@@ -709,12 +710,100 @@ const PROJEKTE_MAIN = `<div class="pr">
   .pr-seclabel{font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:var(--mut2);margin:22px 0 10px}
 </style>
 <script src="/projekte.js" defer></script>`;
+// Seite „Dashboard": KPI-Kacheln (große Zahl + Handlungssatz, anklickbar) + zwei feste Listen
+// („Zuletzt geändert", „Kernanalysen fehlen") + zwei aufklappbare Listen (Kachel „Dateien zu prüfen"
+// / „Neu in 7 Tagen"). Alle Zahlen aus denselben Funktionen wie Projekte + Suche (/api/dashboard).
+// Vasco-Regel: kein Barometer ohne Handlungsaussage. Kein KI-Knopf, nur lesen.
+const DASHBOARD_MAIN = `<div class="db">
+  <div class="db-top">
+    <span class="db-spacer"></span>
+    <span class="db-stand" id="db-stand">Stand: —</span>
+    <button class="btn ghost" id="db-reload" type="button">↻ Neu laden</button>
+  </div>
+  <div id="db-kpis" class="db-kpis"><div class="db-note">Lädt … Beim ersten Öffnen werden alle Projektordner in voller Tiefe gezählt und der Datei-Index aufgebaut — das kann bis zu ~1 Minute dauern. Danach ist es zwischengespeichert und sofort da.</div></div>
+  <section id="db-panel-pruefen" class="db-panel" hidden></section>
+  <section id="db-panel-neu7" class="db-panel" hidden></section>
+  <div class="db-lists">
+    <section id="db-zuletzt" class="db-card"></section>
+    <section id="db-kernfehlen" class="db-card"></section>
+  </div>
+</div>
+<style>
+  .db{max-width:1180px}
+  .db [hidden]{display:none!important}
+  .db-top{display:flex;align-items:center;gap:14px;margin-bottom:16px;flex-wrap:wrap}
+  .db-spacer{flex:1}
+  .db-stand{font-size:12px;color:var(--mut2);white-space:nowrap}
+  .db-note{color:var(--mut);padding:16px 4px}
+  .db-err{color:var(--bad);padding:14px 4px}
+  /* KPI-Kacheln */
+  .db-kpis{display:grid;grid-template-columns:repeat(auto-fill,minmax(212px,1fr));gap:14px;margin-bottom:8px}
+  .db-kpi{display:flex;flex-direction:column;gap:6px;background:#fff;border:1px solid var(--line);
+    border-radius:var(--r-card);box-shadow:var(--shadow);padding:16px 16px 14px;text-decoration:none;
+    color:var(--txt);cursor:pointer;position:relative;transition:border-color .12s ease}
+  .db-kpi:hover{border-color:#000}
+  .db-kpi.warn::before{content:"";position:absolute;left:0;top:12px;bottom:12px;width:3px;
+    background:var(--acc);border-radius:2px}
+  .db-num{font-size:34px;font-weight:760;line-height:1;color:#000;letter-spacing:-.02em}
+  .db-num.dash{color:var(--mut2);font-weight:400}
+  .db-label{font-size:13px;font-weight:600;color:var(--txt)}
+  .db-action{font-size:12px;color:var(--mut)}
+  .db-kpi:hover .db-action{color:var(--acc2)}
+  .db-hint{font-size:11.5px;color:var(--mut2)}
+  .db-kpi.active{border-color:#000;background:var(--soft2)}
+  /* Panels (aufklappbare Listen) + feste Listen: gemeinsame Karten-Optik */
+  .db-panel{background:#fff;border:1px solid var(--line);border-radius:var(--r-card);box-shadow:var(--shadow);
+    padding:14px 16px;margin:14px 0 0}
+  .db-card{background:#fff;border:1px solid var(--line);border-radius:var(--r-card);box-shadow:var(--shadow);
+    padding:14px 16px}
+  .db-lists{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:18px}
+  @media(max-width:900px){.db-lists{grid-template-columns:1fr}}
+  .db-h{display:flex;align-items:baseline;gap:10px;margin:0 0 10px}
+  .db-h h3{margin:0;font-size:15px;font-weight:700;color:#000}
+  .db-h .db-count{font-size:12px;color:var(--mut2)}
+  .db-h .db-close{margin-left:auto;font-size:12px;padding:4px 10px}
+  /* Tabellen (schwarzer Kopf, Design-Tokens) */
+  .db-table{width:100%;border-collapse:collapse;font-size:12.5px}
+  .db-table thead th{background:var(--ink);color:#fff;text-align:left;font-weight:600;font-size:11px;
+    padding:9px 10px;text-transform:uppercase;letter-spacing:.4px;white-space:nowrap}
+  .db-table tbody td{padding:8px 10px;border-top:1px solid var(--line2);vertical-align:middle}
+  .db-table tbody tr:hover{background:var(--soft2)}
+  .db-name{display:flex;align-items:center;gap:8px;min-width:0}
+  .db-ico{width:14px;text-align:center;color:var(--mut2);flex:none}
+  .db-name b{font-weight:500;color:var(--txt);overflow-wrap:anywhere}
+  .db-num-c{color:var(--mut);white-space:nowrap}
+  .db-col-r{text-align:right;white-space:nowrap}
+  .db-open{font-size:12px;padding:4px 9px;white-space:nowrap}
+  /* „Kernanalysen fehlen"-Liste */
+  .db-kf{list-style:none;margin:0;padding:0}
+  .db-kf li{display:flex;align-items:flex-start;gap:10px;padding:9px 0;border-top:1px solid var(--line2)}
+  .db-kf li:first-child{border-top:0}
+  .db-kf .db-kf-pid{font-weight:600;color:var(--txt);white-space:nowrap;min-width:120px}
+  .db-kf .db-kf-pid a{text-decoration:none}
+  .db-kf .db-kf-pid a:hover{text-decoration:underline}
+  .db-kf .db-kf-codes{display:flex;flex-wrap:wrap;gap:6px}
+  .db-code{display:inline-block;padding:1px 8px;border-radius:var(--r-list);font-size:11px;font-weight:700;
+    background:#fff;border:1px dashed var(--warn);color:var(--warn)}
+  .db-empty{color:var(--mut);font-size:13px;padding:6px 0}
+</style>
+<script src="/dashboard.js" defer></script>`;
 function sendHtml(res, html) { res.set("content-type", "text/html; charset=utf-8"); res.send(html); }
 
-// Aktive Seiten (echte, direkt aufrufbare Adressen; vorerst leer) — außer „Datenräume"/„Projekte" (eigene Seiten unten).
+// Aktive Seiten (echte, direkt aufrufbare Adressen; vorerst leer) — außer „Dashboard"/„Datenräume"/
+// „Projekte" (eigene Seiten unten).
 for (const it of NAV_ACTIVE)
-  if (it.key !== "datenraeume" && it.key !== "projekte")
+  if (it.key !== "dashboard" && it.key !== "datenraeume" && it.key !== "projekte")
     app.get(it.path, requireAuth, (_req, res) => sendHtml(res, renderPage(it.key, it.label, activeMain())));
+
+// „Dashboard" (Startseite): KPI-Kacheln mit Handlungsaussage + zwei Listen (in der festen Shell).
+// Gegated wie alle Seiten. Logik lädt /dashboard.js (holt /api/dashboard). Nur lesen, kein KI-Knopf.
+app.get("/", requireAuth, (_req, res) =>
+  sendHtml(res, renderPage("dashboard", "Dashboard", DASHBOARD_MAIN)));
+app.get("/dashboard.js", (_req, res) => {
+  res.set("content-type", "application/javascript; charset=utf-8");
+  res.set("cache-control", "no-store");
+  res.send(readFileSync(resolve(__dir, "public/dashboard.js"), "utf8"));
+});
 
 // „Projekte": Übersicht + Projektseite (in der festen Shell). Gegated wie alle Seiten.
 app.get("/projekte", requireAuth, (_req, res) =>
@@ -1026,6 +1115,85 @@ app.get("/api/search", requireAuth, limit(navBudget, "Zu viele Such-Anfragen —
       limit: limitN, offset,
     });
     res.json({ total, rows, limit: limitN, offset, facets: idx.facets, builtAt: new Date(idx.builtAt).toISOString(), source: "index" });
+  } catch (e) {
+    res.status(e.status || 502).json({ error: e.body ?? e.message });
+  }
+});
+
+// GET /api/dashboard — Startseite: KPI-Zahlen (mit Handlungsaussage) + Listen, aus DENSELBEN Funktionen
+// wie Projekte (projectsOverview / unsortedDocsFromIndex) und Suche (Datei-Index). Deterministisch,
+// KEINE KI, kein Token-Verbrauch. Zwei unabhängige Blöcke (projects / search): fällt einer aus, liefert
+// er { error } → die betroffenen Kacheln zeigen „–" mit Grund (keine erfundenen Werte). Die Ausschlüsse
+// (90_Personal…/_ZU_LOESCHEN…/.DS_Store) sind zentral im Tor schon entfernt, bevor hier etwas ankommt.
+app.get("/api/dashboard", requireAuth, limit(navBudget, "Zu viele Anfragen — kurz warten."), async (req, res) => {
+  let client;
+  try { client = navClient(); }
+  catch (e) { return res.status(503).json({ error: `Graph nicht konfiguriert: ${e.message}` }); }
+  try {
+    const { root, reason } = await resolveRoot(client);
+    if (!root) return res.status(503).json({ error: reason || "Workspace-Wurzel nicht auflösbar." });
+    const principal = principalOf(req);
+    const refresh = req.query.refresh === "1";
+    const now = Date.now();
+    const LIST_CAP = 500;                    // Listen im Payload begrenzen (Kachelzahl bleibt die Gesamtzahl)
+    const STALE_MS = 30 * 24 * 3600 * 1000;  // „ohne Änderung seit 30 Tagen"
+    const WINDOW_MS = 7 * 24 * 3600 * 1000;  // „neu in den letzten 7 Tagen"
+    const catalog = await loadAnalysisCatalog(client, root);
+    const out = { generatedAt: new Date().toISOString() };
+
+    // --- Block 1: Projekte (nereo.development/04_Projekte) — DIESELBE Auswertung wie die Seite „Projekte". ---
+    try {
+      const kids = await client.listChildren(root.driveId, root.itemId);
+      const dev = pickCompanies(kids).find(
+        (c) => (c.node.name || "").toLowerCase() === "nereo.development" || (c.company.key || "").toLowerCase() === "nereo.development");
+      if (!dev) throw Object.assign(new Error("Gesellschaft „nereo.development“ ist nicht sichtbar."), { status: 404 });
+      const projNode = await client.childByName(root.driveId, dev.node.id, "04_Projekte");
+      if (!projNode || !projNode.folder) throw Object.assign(new Error("Ordner „04_Projekte“ nicht gefunden."), { status: 404 });
+      const projektePath = `${dev.node.name}/04_Projekte`;
+      const idx = await getProjectsIndex(client, principal, { driveId: root.driveId, projekteItemId: projNode.id, projektePath, refresh });
+      const projects = projectsOverview({ index: idx, projektePath, catalog });
+      const catName = new Map((catalog || []).map((c) => [c.code, c.name]));
+      const zuPruefen = unsortedDocsFromIndex({ index: idx, projektePath });
+      const kernFehlen = projects
+        .filter((p) => (p.coreMissing || []).length)
+        .map((p) => ({
+          projektId: p.projektId, name: p.name, kuerzel: p.kuerzel, stadt: p.stadt, webUrl: p.webUrl,
+          missing: (p.coreMissing || []).map((code) => ({ code, name: catName.get(code) || "" })),
+        }));
+      out.projects = {
+        projektePath,
+        projektCount: projects.length,
+        // Kern unvollständig: gleiche Bedingung wie der Filter der Projekte-Seite (core.filled < core.total).
+        kernIncompleteCount: projects.filter((p) => p.core.total && p.core.filled < p.core.total).length,
+        // Ohne Änderung seit 30 Tagen: jüngste Dateiänderung älter als 30 Tage. Projekte ganz OHNE
+        // Dateien (kein lastModified) zählen NICHT mit (kein erfundenes Datum) — Entscheidung Mike.
+        stale30Count: staleProjects(projects, { now, ms: STALE_MS }).length,
+        zuPruefenTotal: zuPruefen.length,               // Kachelzahl = Länge der (evtl. gekappten) Liste
+        zuPruefen: zuPruefen.slice(0, LIST_CAP),
+        kernFehlen,
+        builtAt: new Date(idx.builtAt).toISOString(),
+      };
+    } catch (e) {
+      out.projects = { error: e.body ?? e.message };
+    }
+
+    // --- Block 2: Datei-Index / Suche — DERSELBE Index wie die Suche der Seite „Datenräume". ---
+    try {
+      const sidx = await getSearchIndex(client, principal, { refresh });
+      const recent = recentlyModified(sidx.rows, { sinceMs: now - WINDOW_MS, limit: LIST_CAP });
+      out.search = {
+        files: sidx.facets?.files ?? sidx.rows.length,
+        patternNoCount: sidx.facets?.patternNo ?? 0,   // „Muster erkannt: nein" = /api/search?pattern=nein
+        neu7Total: recent.total,
+        neu7: recent.rows,
+        zuletzt: latestModified(sidx.rows, 10),
+        builtAt: new Date(sidx.builtAt).toISOString(),
+      };
+    } catch (e) {
+      out.search = { error: e.body ?? e.message };
+    }
+
+    res.json(out);
   } catch (e) {
     res.status(e.status || 502).json({ error: e.body ?? e.message });
   }
