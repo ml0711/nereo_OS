@@ -4,6 +4,8 @@
 //   und über mutate() — das immer durch die Guardrails läuft (dryRun + Audit-Callback).
 // Siehe ../../CLAUDE.md §2/§3 (Schreibmacht mit Mensch-im-Loop + Audit).
 
+import { isExcluded, filterExcluded } from "./workspace.js";
+
 const AUTHORITY = "https://login.microsoftonline.com";
 const GRAPH = "https://graph.microsoft.com/v1.0";
 
@@ -201,10 +203,14 @@ export function createGraphClient(cfg, opts = {}) {
 
     // --- Drives (OneDrive for Business + Dokumentbibliotheken) ---
     getUserDrive: (upn) => request(`/users/${upn}/drive?$select=id,driveType,webUrl,quota`),
-    listChildren: (driveId, itemId = null) =>
-      getAll(
-        `/drives/${driveId}/${itemId ? `items/${itemId}` : "root"}/children` +
-          `?$select=id,name,size,folder,file,webUrl,lastModifiedDateTime&$top=200`
+    // Ausgeschlossene Namen (Bauregel §3) fallen hier zentral raus — bevor irgendein
+    // Aufrufer (Navigation, /api/fs, Analyse-Prüfung) sie zu sehen bekommt.
+    listChildren: async (driveId, itemId = null) =>
+      filterExcluded(
+        await getAll(
+          `/drives/${driveId}/${itemId ? `items/${itemId}` : "root"}/children` +
+            `?$select=id,name,size,folder,file,webUrl,lastModifiedDateTime&$top=200`
+        )
       ),
 
     /** Rekursiver Strukturbaum eines Drives (nur Metadaten, keine Inhalte). */
@@ -216,6 +222,9 @@ export function createGraphClient(cfg, opts = {}) {
         );
         const nodes = [];
         for (const k of kids) {
+          // Bauregel §3: ausgeschlossene Namen weder aufnehmen noch betreten — so
+          // taucht 90_Personal…/_ZU_LOESCHEN…/.DS_Store nie im Index/in KPIs/in der KI auf.
+          if (isExcluded(k.name)) continue;
           const node = {
             name: k.name,
             id: k.id,
@@ -246,9 +255,12 @@ export function createGraphClient(cfg, opts = {}) {
     },
 
     // --- Suche ---
-    searchDrive: (driveId, q) =>
+    searchDrive: async (driveId, q) =>
       // OData-Stringliteral: ' verdoppeln (sonst bricht ein Apostroph die Query / 400), dann URL-encoden.
-      getAll(`/drives/${driveId}/root/search(q='${encodeURIComponent(String(q).replace(/'/g, "''"))}')?$top=200`),
+      // Ausgeschlossene Treffer (Bauregel §3) werden auch aus der Suche entfernt.
+      filterExcluded(
+        await getAll(`/drives/${driveId}/root/search(q='${encodeURIComponent(String(q).replace(/'/g, "''"))}')?$top=200`)
+      ),
 
     // --- Navigation (für die Workspace-Shell, CLAUDE.md §1: Struktur spiegeln) ---
     /** Item per relativem Pfad (Pfad-Adressierung). NUR für Bootstrap-Root-Auflösung —
@@ -267,9 +279,14 @@ export function createGraphClient(cfg, opts = {}) {
      *  Containment by construction: es werden nur Kinder eines bereits aufgelösten
      *  Elterns betrachtet. null, wenn nicht (mehr) vorhanden. */
     async childByName(driveId, parentItemId, name) {
-      const kids = await getAll(
-        `/drives/${driveId}/items/${parentItemId}/children` +
-          `?$select=id,name,size,folder,file,webUrl,lastModifiedDateTime&$top=200`
+      // Ausgeschlossene Namen sind hier nicht auffindbar → man kann per direkter Adresse
+      // nicht in 90_Personal…/_ZU_LOESCHEN… absteigen (descend läuft dann ins 404). Bauregel §3.
+      if (isExcluded(name)) return null;
+      const kids = filterExcluded(
+        await getAll(
+          `/drives/${driveId}/items/${parentItemId}/children` +
+            `?$select=id,name,size,folder,file,webUrl,lastModifiedDateTime&$top=200`
+        )
       );
       // Exakt zuerst, dann case-insensitiv (SharePoint/OneDrive sind case-insensitive,
       // case-preserving) — so überleben gespeicherte Pfade eine reine Groß-/Kleinschreib-Umbenennung.

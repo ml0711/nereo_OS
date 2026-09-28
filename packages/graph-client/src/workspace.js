@@ -17,6 +17,76 @@ export const ROOT_CONFIG = {
   folder: process.env.WORKSPACE_ROOT_FOLDER || "nereo Development Partners",
 };
 
+// Kleiner Helfer: kommagetrennte ENV-Liste → Array (oder null, wenn nicht/leer gesetzt).
+function splitEnvList(v) {
+  if (v == null || String(v).trim() === "") return null;
+  return String(v).split(",").map((s) => s.trim()).filter(Boolean);
+}
+
+// ===================================================================
+// DATENORT-POLICY (Bauregel §2/§3, CLAUDE.md §3). EINE zentrale Stelle für
+// (a) die sichtbaren Gesellschaften und (b) die Ausschlüsse. ALLES ENV-überschreibbar,
+// damit der spätere Umzug auf eigene SharePoint-Teamsites (eine je Gesellschaft) und
+// jede Ausschluss-Anpassung eine reine Konfig-Änderung bleibt — kein Code-Eingriff.
+// ===================================================================
+
+// (a) Sichtbare Gesellschaften an der WURZEL, in Anzeige-Reihenfolge. Alles andere auf
+//     Wurzelebene (z. B. "Projekte_alt", "_VORLAGE_Gesellschaft") wird NICHT angezeigt —
+//     das ist eine Erlaubnisliste, kein Ausschluss. `site` ist der Platzhalter für den
+//     Umzug auf eine eigene Teamsite je Gesellschaft: dann nur die Site-ID hier eintragen
+//     (heute wird über `name` der Unterordner unter der Wurzel gefunden).
+export const COMPANY_CONFIG = (splitEnvList(process.env.WORKSPACE_COMPANIES) ?? [
+  "nereo.Group",
+  "nereo.development",
+]).map((name) => ({ key: companyKey(name), name, site: null }));
+
+// Stabile, sonderzeichen-freie Kennung je Gesellschaft (für Adressen / späteren Site-Bezug).
+function companyKey(name) {
+  return String(name).toLowerCase().replace(/^nereo\./, "").replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
+}
+
+// (b) Ausschlüsse — gelten AUSNAHMSLOS an jeder Lesestelle (Navigation, Suche, Zählungen,
+//     Index/Sync, KI-Aufrufe). `prefixes` = "Name beginnt mit …" (inkl. allem darunter),
+//     `exact` = exakter ganzer Name. Case-insensitiv (SharePoint ist case-preserving).
+export const EXCLUDE_CONFIG = {
+  prefixes: splitEnvList(process.env.WORKSPACE_EXCLUDE_PREFIXES) ?? ["90_Personal", "_ZU_LOESCHEN"],
+  exact: splitEnvList(process.env.WORKSPACE_EXCLUDE_EXACT) ?? [".DS_Store"],
+};
+
+/** true, wenn ein Ordner-/Dateiname NIE ausgeliefert werden darf (Bauregel §3). */
+export function isExcluded(name) {
+  const low = String(name ?? "").toLowerCase();
+  if (!low) return false;
+  for (const p of EXCLUDE_CONFIG.prefixes) if (low.startsWith(p.toLowerCase())) return true;
+  for (const e of EXCLUDE_CONFIG.exact) if (low === e.toLowerCase()) return true;
+  return false;
+}
+
+/** Entfernt ausgeschlossene Einträge aus einer Knoten-/Item-Liste (matcht `.name`). */
+export function filterExcluded(items) {
+  return (items ?? []).filter((it) => !isExcluded(it?.name));
+}
+
+/**
+ * Wählt aus den WURZEL-Kindern NUR die konfigurierten Gesellschaften, in Config-Reihenfolge,
+ * und wirft ausgeschlossene Namen weg. Rückgabe: [{ node, company }] — nicht gefundene
+ * Gesellschaften werden übersprungen (kein Crash; die UI zeigt dann eben weniger).
+ * Match case-insensitiv (SharePoint/OneDrive: case-preserving, case-insensitive).
+ */
+export function pickCompanies(rootChildren) {
+  const byName = new Map();
+  for (const k of rootChildren ?? []) {
+    if (!k?.folder || isExcluded(k.name)) continue;
+    byName.set(String(k.name).toLowerCase(), k);
+  }
+  const out = [];
+  for (const company of COMPANY_CONFIG) {
+    const node = byName.get(company.name.toLowerCase());
+    if (node) out.push({ node, company });
+  }
+  return out;
+}
+
 const CACHE_TTL_MS = 6 * 3600 * 1000; // driveId/itemId sind effektiv immutabel
 let _root = null; // { driveId, itemId, name, webUrl, owner, ownerUpn, resolvedAt }
 let _pending = null; // laufende Auflösung (In-Flight-Guard gegen parallele Erst-Zugriffe)

@@ -14,7 +14,7 @@ import { extractDataRooms, summarizeDataRooms, isDataRoomName } from "../../../p
 import { createGraphClient, graphConfigFromEnv } from "../../../packages/graph-client/src/index.js";
 import { loadLatestIndex, loadAnalyses, logWrite, loadWriteAudit, pingDb,
   loadSubscriptionById, loadSubscriptionByDrive, loadActiveSubscriptions, markDirty, claimDirtySubscription, claimSubscriptionForSync, finishProcessing } from "../../../packages/graph-client/src/index-store.js";
-import { resolveRoot, safeRelSegments } from "../../../packages/graph-client/src/workspace.js";
+import { resolveRoot, safeRelSegments, pickCompanies } from "../../../packages/graph-client/src/workspace.js";
 import { resolveCapability, serializeCapability } from "../../../packages/graph-client/src/structure.js";
 import { deltaThenRewalkAndSave } from "../../../packages/graph-client/src/sync.js";
 
@@ -567,16 +567,17 @@ app.get("/api/workspace", requireAuth, async (req, res) => {
     const { root, reason, candidates } = await resolveRoot(client, { force: req.query.refresh === "1" });
     if (!root) return res.json({ root: null, reason, candidates: candidates ?? [] });
     const kids = await client.listChildren(root.driveId, root.itemId);
-    const nav = kids
-      .filter((k) => k.folder)
-      .map((k) => {
+    // Erlaubnisliste (Bauregel §2/§3): NUR die konfigurierten Gesellschaften, in
+    // Config-Reihenfolge — "Projekte_alt"/"_VORLAGE_Gesellschaft" u. Ä. erscheinen nicht.
+    // (Ausschlüsse wie 90_Personal… hat listChildren bereits zentral entfernt.)
+    const nav = pickCompanies(kids)
+      .map(({ node: k, company }) => {
         // Sidebar-Capability namensbasiert (Signal A reicht hier; die ≥3-Kinder-Erkennung
         // für verschachtelte Datenräume passiert erst beim Navigieren in /api/fs).
         const ctx = { relPath: k.name, name: k.name, segments: [k.name], depth: 1, isRoot: false, childFolderNames: [] };
         const cap = serializeCapability(resolveCapability(ctx), { writeEnabled: GRAPH_WRITE_ENABLED });
-        return { name: k.name, path: k.name, type: "folder", itemId: k.id, webUrl: k.webUrl ?? null, childCount: k.folder?.childCount ?? null, capability: cap };
-      })
-      .sort((a, b) => a.name.localeCompare(b.name, "de"));
+        return { name: k.name, path: k.name, type: "folder", itemId: k.id, company: company.key, webUrl: k.webUrl ?? null, childCount: k.folder?.childCount ?? null, capability: cap };
+      });
     res.json({
       root: { name: root.name, driveId: root.driveId, itemId: root.itemId, webUrl: root.webUrl, owner: root.owner, ownerUpn: root.ownerUpn },
       nav,
