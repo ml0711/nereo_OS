@@ -46,7 +46,7 @@
   }
   function rowFile(c) {
     const href = safeHref(c.webUrl);
-    const open = href ? `<a class="btn ghost dr-open" href="${esc(href)}" target="_blank" rel="noopener noreferrer">In SharePoint öffnen ↗</a>` : "";
+    const open = href ? `<a class="btn ghost dr-open" data-doc="${esc(c.name)}" href="${esc(href)}" target="_blank" rel="noopener noreferrer">In SharePoint öffnen ↗</a>` : "";
     return `<tr class="file">
       <td><div class="dr-name"><span class="dr-ico">•</span><b>${esc(c.name)}</b></div></td>
       <td class="dr-num">${esc(c.docDate || "")}</td>
@@ -147,7 +147,7 @@
     if (!rows.length) { box.innerHTML = head + `<div class="dr-note">Keine Treffer.</div>`; return; }
     const body = rows.map((r) => {
       const href = safeHref(r.webUrl);
-      const open = href ? `<a class="btn ghost dr-open" href="${esc(href)}" target="_blank" rel="noopener noreferrer">Öffnen ↗</a>` : "";
+      const open = href ? `<a class="btn ghost dr-open" data-doc="${esc(r.name)}" href="${esc(href)}" target="_blank" rel="noopener noreferrer">Öffnen ↗</a>` : "";
       return `<tr>
         <td><div class="dr-name"><span class="dr-ico">•</span><b>${esc(r.name)}</b></div></td>
         <td class="dr-num">${esc(r.docDate || "")}</td>

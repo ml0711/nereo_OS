@@ -70,7 +70,7 @@
   // ---------------- Projektseite (Detail) ----------------
   function docItem(d) {
     const href = safeHref(d.webUrl);
-    const open = href ? `<a class="btn ghost d-open" href="${esc(href)}" target="_blank" rel="noopener noreferrer">Öffnen ↗</a>` : "";
+    const open = href ? `<a class="btn ghost d-open" data-doc="${esc(d.name)}" href="${esc(href)}" target="_blank" rel="noopener noreferrer">Öffnen ↗</a>` : "";
     return `<li><span class="d-name">${esc(d.name)}</span><span class="d-date">${esc(d.docDate || fmtDate(d.modified) || "")}</span>${open}</li>`;
   }
   function sectionHtml(a) {

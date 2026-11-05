@@ -140,6 +140,14 @@
     document.getElementById("who").textContent=name;
     document.getElementById("avatar").textContent=(name[0]||"·").toUpperCase();
   }).catch(function(){});
+  // Klick auf einen Dokument-Link fürs Protokoll melden (der Link selbst führt direkt zu Microsoft).
+  function meldeDokument(e){
+    var a=e.target&&e.target.closest?e.target.closest("a[data-doc]"):null;
+    if(!a||!navigator.sendBeacon) return;
+    navigator.sendBeacon("/api/aktivitaet",new Blob([JSON.stringify({name:a.getAttribute("data-doc")})],{type:"application/json"}));
+  }
+  document.addEventListener("click",meldeDokument);
+  document.addEventListener("auxclick",meldeDokument);
   // Mobile: Seitenleiste ein-/ausblenden (auf Desktop ist der Menü-Knopf ausgeblendet).
   document.getElementById("menuBtn").onclick=function(){document.getElementById("side").classList.toggle("open");};
 </script>

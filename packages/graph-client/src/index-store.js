@@ -317,3 +317,76 @@ export async function deleteSubscription(id) {
   const p = await getPool();
   await p.query(`DELETE FROM graph_subscription WHERE id=$1`, [id]);
 }
+
+// ---------- Aktivitäts-Protokoll (Seite „Verwaltung") ----------
+// Nur App-Aktivitäten, keine Dokumentinhalte, keine Suchbegriffe. Alte Einträge löscht pruneActivity.
+let activitySchemaReady = false;
+async function ensureActivitySchema() {
+  if (activitySchemaReady) return;
+  const p = await getPool();
+  await p.query(`
+    CREATE TABLE IF NOT EXISTS activity_log (
+      id      bigserial PRIMARY KEY,
+      at      timestamptz NOT NULL DEFAULT now(),
+      sub     text NOT NULL,
+      email   text,
+      name    text,
+      art     text NOT NULL,
+      detail  text,
+      ip      text,
+      browser text
+    )`);
+  await p.query(`CREATE INDEX IF NOT EXISTS activity_log_at_idx ON activity_log (at DESC)`);
+  await p.query(`CREATE INDEX IF NOT EXISTS activity_log_sub_idx ON activity_log (sub, at DESC)`);
+  activitySchemaReady = true;
+}
+
+export async function logActivity(e) {
+  await ensureActivitySchema();
+  const p = await getPool();
+  await p.query(
+    `INSERT INTO activity_log (sub, email, name, art, detail, ip, browser) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+    [e.sub, e.email ?? null, e.name ?? null, e.art, e.detail ?? null, e.ip ?? null, e.browser ?? null]
+  );
+}
+
+/** Neueste zuerst; beforeId blättert weiter. */
+export async function loadActivity({ art = null, sub = null, limit = 100, beforeId = null } = {}) {
+  await ensureActivitySchema();
+  const p = await getPool();
+  const before = /^\d+$/.test(String(beforeId ?? "")) ? String(beforeId) : null;
+  const { rows } = await p.query(
+    `SELECT id, at, sub, email, name, art, detail, ip, browser FROM activity_log
+      WHERE ($1::text IS NULL OR art = $1)
+        AND ($2::text IS NULL OR sub = $2)
+        AND ($3::bigint IS NULL OR id < $3::bigint)
+      ORDER BY id DESC LIMIT $4`,
+    [art, sub, before, Math.min(Math.max(Number(limit) || 100, 1), 500)]
+  );
+  return rows;
+}
+
+/** Eine Zeile je Person. Name und E-Mail stammen aus dem neuesten Eintrag mit Wert. */
+export async function loadActivityUsers() {
+  await ensureActivitySchema();
+  const p = await getPool();
+  const { rows } = await p.query(
+    `SELECT sub,
+            (array_agg(email ORDER BY id DESC) FILTER (WHERE email IS NOT NULL))[1] AS email,
+            (array_agg(name  ORDER BY id DESC) FILTER (WHERE name  IS NOT NULL))[1] AS name,
+            MIN(at) FILTER (WHERE art = 'anmeldung') AS erste_anmeldung,
+            MAX(at) FILTER (WHERE art = 'anmeldung') AS letzte_anmeldung,
+            MAX(at) AS letzte_aktivitaet,
+            COUNT(*) FILTER (WHERE art = 'anmeldung')::int AS anmeldungen
+       FROM activity_log GROUP BY sub ORDER BY MAX(at) DESC`
+  );
+  return rows;
+}
+
+/** Löscht Einträge, die älter als die Aufbewahrungsfrist sind. Gibt die Anzahl zurück. */
+export async function pruneActivity(months = 12) {
+  await ensureActivitySchema();
+  const p = await getPool();
+  const { rowCount } = await p.query(`DELETE FROM activity_log WHERE at < now() - make_interval(months => $1::int)`, [months]);
+  return rowCount;
+}

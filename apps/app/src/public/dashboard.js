@@ -46,7 +46,7 @@
   function fileTable(rows, dateLabel, dateOf) {
     const body = rows.map((r) => {
       const href = safeHref(r.webUrl);
-      const open = href ? `<a class="btn ghost db-open" href="${esc(href)}" target="_blank" rel="noopener noreferrer">Öffnen ↗</a>` : "";
+      const open = href ? `<a class="btn ghost db-open" data-doc="${esc(r.name)}" href="${esc(href)}" target="_blank" rel="noopener noreferrer">Öffnen ↗</a>` : "";
       return `<tr>
         <td><div class="db-name"><span class="db-ico">•</span><b>${esc(r.name)}</b></div></td>
         <td class="db-num-c">${esc(r.projektId || "")}</td>

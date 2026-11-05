@@ -20,6 +20,8 @@ import { docDateFromName, loadDocTypes } from "../../../packages/graph-client/sr
 import { buildSearchIndex, queryIndex, computeFacets, recentlyModified, latestModified } from "../../../packages/graph-client/src/search.js";
 import { resolveCapability, serializeCapability } from "../../../packages/graph-client/src/structure.js";
 import { deltaThenRewalkAndSave } from "../../../packages/graph-client/src/sync.js";
+import { logActivity, loadActivity, loadActivityUsers, pruneActivity } from "../../../packages/graph-client/src/index-store.js";
+import { createRecorder, activityMiddleware, mountVerwaltung, adminNavLink, retentionMonths } from "./verwaltung.js";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dir, "../../..");
@@ -65,6 +67,16 @@ app.use((_req, res, next) => {
   res.set("Cache-Control", "no-store");
   next();
 });
+
+// Aktivitäts-Protokoll für die Seite „Verwaltung“ (siehe verwaltung.js). pageLabel liest die Navigation erst zur Laufzeit.
+const activityStore = { logActivity, loadActivity, loadActivityUsers };
+const recordActivity = createRecorder({ store: activityStore });
+const pageLabel = (path) => {
+  if (path === "/workspace") return "Workspace";
+  if (path === "/verwaltung") return "Verwaltung";
+  return [...NAV_ACTIVE, ...NAV_PREP].find((it) => it.path === path)?.label ?? null;
+};
+app.use(activityMiddleware(recordActivity, pageLabel));
 
 const b64url = (buf) => Buffer.from(buf).toString("base64url");
 
@@ -394,6 +406,7 @@ app.get("/callback", async (req, res) => {
     req.session.idToken = tok.id_token;
     req.session.pkce = undefined;
     req.session.state = undefined;
+    recordActivity(req, "anmeldung", null, { dedupe: false });
     res.redirect("/");
   } catch (e) {
     res.status(500).send('Login-Fehler. <a href="/login">neu</a>');
@@ -405,6 +418,7 @@ app.get("/logout", (req, res) => {
   // die SSO-Session nicht zuverlässig, der nächste /login re-authentifiziert still
   // durch und der User landet sofort wieder im Dashboard ("trotzdem eingeloggt").
   const idToken = req.session?.idToken;
+  recordActivity(req, "abmeldung", null, { dedupe: false });
   req.session = null;
   if (!AUTH_CONFIGURED) return res.redirect("/");
   const u = new URL(`${ISSUER}/session/end`);
@@ -530,6 +544,7 @@ function navHtml(activeKey) {
     `<a class="${it.key === activeKey ? "active" : ""}${prep ? " prep" : ""}" href="${it.path}">` +
     `<span class="ico">${it.icon}</span> ${escHtml(it.label)}</a>`;
   return NAV_ACTIVE.map((it) => link(it, false)).join("") +
+    (activeKey === "verwaltung" ? "<!--ADMIN_NAV_ACTIVE-->" : "<!--ADMIN_NAV-->") +
     `<div class="sec">In Vorbereitung</div>` +
     NAV_PREP.map((it) => link(it, true)).join("");
 }
@@ -787,7 +802,15 @@ const DASHBOARD_MAIN = `<div class="db">
   .db-empty{color:var(--mut);font-size:13px;padding:6px 0}
 </style>
 <script src="/dashboard.js" defer></script>`;
-function sendHtml(res, html) { res.set("content-type", "text/html; charset=utf-8"); res.send(html); }
+function sendHtml(res, html) {
+  // Menüpunkt „Verwaltung“ nur für Admins (die Seite selbst prüft zusätzlich serverseitig).
+  const user = res.req.session?.user;
+  const page = html
+    .replace("<!--ADMIN_NAV-->", () => adminNavLink(user))
+    .replace("<!--ADMIN_NAV_ACTIVE-->", () => adminNavLink(user, true));
+  res.set("content-type", "text/html; charset=utf-8");
+  res.send(page);
+}
 
 // Aktive Seiten (echte, direkt aufrufbare Adressen; vorerst leer) — außer „Dashboard"/„Datenräume"/
 // „Projekte" (eigene Seiten unten).
@@ -838,6 +861,13 @@ app.get("/workspace", requireAuth, (_req, res) =>
   sendHtml(res, readFileSync(resolve(__dir, "public/workspace.html"), "utf8")));
 
 app.get("/api/me", requireAuth, (req, res) => res.json({ user: req.session.user }));
+
+// Seite „Verwaltung“ (nur Admins): Nutzer + Aktivitäten.
+const docBudget = rateLimiter({ windowMs: 60 * 1000, max: 60 });
+mountVerwaltung(app, {
+  store: activityStore, record: recordActivity, requireAuth, renderPage, sendHtml,
+  docLimit: limit(docBudget, "Zu viele Anfragen — kurz warten."),
+});
 
 async function loadIndex() {
   if (process.env.DATABASE_URL) {
@@ -1299,6 +1329,12 @@ if (process.env.DATABASE_URL) {
 // Gate: volle Graph-Config (navClient braucht TENANT+CLIENT+SECRET) — kein halb-armer Zustand mit Log-Rauschen.
 let _graphReady = false;
 try { graphConfigFromEnv(); _graphReady = true; } catch {}
+// Protokoll-Einträge nach Ablauf der Aufbewahrungsfrist löschen: beim Start und täglich.
+if (process.env.DATABASE_URL) {
+  const prune = () => pruneActivity(retentionMonths()).catch((e) => console.error("Aktivitäts-Log aufräumen:", e.message));
+  prune();
+  setInterval(prune, 24 * 3600 * 1000).unref();
+}
 if (process.env.DATABASE_URL && _graphReady) {
   startupReconcile();
   setInterval(() => { reconcileSelf(); }, 30 * 60 * 1000).unref();
