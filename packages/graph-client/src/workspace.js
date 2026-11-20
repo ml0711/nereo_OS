@@ -1,19 +1,18 @@
-// Auflösung der EINEN fixen Workspace-Wurzel ("nereo Development GmbH" / real:
-// "nereo Development Partners"). Diese Wurzel ist der Ausgangspunkt der gesamten App —
-// die Sidebar und alle Navigation gehen von ihren Kindern aus. Siehe ../../CLAUDE.md §1.
-//
-// WICHTIG: Die Wurzel ist NICHT der Drive-Root. Der OneDrive von kienle@nereo.ch enthält
-// auch Privates (Anlagen, nereo Group AG, Notebooks …). Wir lösen gezielt auf die itemId
-// des Ordners "nereo Development Partners" auf und starten ab dessen Kindern.
+// Auflösung der EINEN fixen Workspace-Wurzel. Quelle aller Dateien ist die SharePoint-Seite
+// „nereo.datenraum“ (seit 2026-11-20); ihre Bibliothek „Freigegebene Dokumente“ IST die Wurzel
+// (Aufbau: nereo.Group, nereo.development, _KONVENTIONEN.md, _ANALYSEKATALOG.md …).
+// Die Sidebar und alle Navigation gehen von ihren Kindern aus. Siehe ../../CLAUDE.md §3.
+// Es gibt bewusst KEINEN Rückfall auf ein persönliches OneDrive: ist die Seite nicht lesbar,
+// meldet die App das, statt still alte oder private Daten zu zeigen.
 
-// EINE Quelle des Wurzel-Namens — ENV-überschreibbar, damit der Umzug (anderer Ordner,
-// später eine SharePoint-Site) eine reine Konfig-Änderung ist, kein Code-Eingriff.
+// EINE Quelle des Speicherorts — ENV-überschreibbar (Umzug = Konfig-Änderung, kein Code-Eingriff).
 export const ROOT_CONFIG = {
-  // Bevorzugt: direkt gepinnte ids (stabil, sonderzeichen-immun, überleben Umbenennung).
+  // Bevorzugt: direkt gepinnte ids (stabil). ITEM_ID=root bzw. weggelassen = ganze Bibliothek.
   driveId: process.env.WORKSPACE_ROOT_DRIVE_ID || null,
-  itemId: process.env.WORKSPACE_ROOT_ITEM_ID || null,
-  // Bootstrap-Fallback: über OneDrive-Owner + Ordnername auflösen (einmalig, dann pinnen).
-  ownerUpn: process.env.WORKSPACE_ROOT_UPN || "kienle@nereo.ch",
+  itemId: process.env.WORKSPACE_ROOT_ITEM_ID || (process.env.WORKSPACE_ROOT_DRIVE_ID ? "root" : null),
+  // Ohne Pin: SharePoint-Seite als "host:/sites/name" → deren Standard-Bibliothek.
+  site: process.env.WORKSPACE_ROOT_SITE || "nereo.sharepoint.com:/sites/nereo.datenraum",
+  // Anzeigename der Wurzel (Microsoft nennt eine Bibliothek intern nur „root“).
   folder: process.env.WORKSPACE_ROOT_FOLDER || "nereo Development Partners",
 };
 
@@ -88,7 +87,7 @@ export function pickCompanies(rootChildren) {
 }
 
 const CACHE_TTL_MS = 6 * 3600 * 1000; // driveId/itemId sind effektiv immutabel
-let _root = null; // { driveId, itemId, name, webUrl, owner, ownerUpn, resolvedAt }
+let _root = null; // { driveId, itemId, name, isDriveRoot, webUrl, owner, resolvedAt }
 let _pending = null; // laufende Auflösung (In-Flight-Guard gegen parallele Erst-Zugriffe)
 
 /**
@@ -109,91 +108,71 @@ export function safeRelSegments(relPath) {
 /**
  * Löst die fixe Wurzel auf. Reihenfolge:
  *   1) ENV-Pin (driveId+itemId) → 1 Verifikations-Call.
- *   2) Bootstrap: Owner-OneDrive + Ordnername per Pfad-Adressierung.
- *   3) Diagnostische Degradation: { root:null, reason, candidates } statt Crash.
+ *   2) SharePoint-Seite (WORKSPACE_ROOT_SITE) → Standard-Bibliothek → deren Wurzel.
+ *   3) Sonst { root:null, reason } — KEIN Rückfall auf OneDrive.
  * Ergebnis wird 6h gecacht (force=true erzwingt Neuauflösung).
  *
  * @returns {Promise<{ root: object|null, reason?: string, candidates?: Array }>}
  */
 export async function resolveRoot(client, { force = false } = {}) {
   if (!force && _root && Date.now() - _root.resolvedAt < CACHE_TTL_MS) return { root: _root };
-  // In-Flight-Guard: parallele Erst-Zugriffe (Boot: /api/workspace + /api/fs gleichzeitig)
-  // teilen EINE Auflösung statt jeweils die volle Graph-Kette zu durchlaufen.
+  // In-Flight-Guard: parallele Erst-Zugriffe teilen EINE Auflösung.
   if (!force && _pending) return _pending;
   const p = _resolveRoot(client);
   if (!force) _pending = p;
   try { return await p; } finally { if (_pending === p) _pending = null; }
 }
 
+const ITEM_SELECT = "?$select=id,name,webUrl,folder,parentReference,root";
+
+function toRoot(driveId, item) {
+  // Wurzel = ganze Bibliothek: Microsoft nennt sie „root“ → vertrauter Name aus WORKSPACE_ROOT_FOLDER,
+  // und der Sync zählt dann jede Änderung in der Bibliothek.
+  const isDriveRoot = Boolean(item.root);
+  return {
+    driveId,
+    itemId: item.id,
+    name: isDriveRoot ? ROOT_CONFIG.folder : item.name,
+    isDriveRoot,
+    webUrl: item.webUrl ?? null,
+    owner: "SharePoint",
+    resolvedAt: Date.now(),
+  };
+}
+
 async function _resolveRoot(client) {
+  let lastStatus = null;
   // 1) ENV-Pin: stabil und schnell.
   if (ROOT_CONFIG.driveId && ROOT_CONFIG.itemId) {
     try {
-      const item = await client.get(
-        `/drives/${ROOT_CONFIG.driveId}/items/${ROOT_CONFIG.itemId}` +
-          `?$select=id,name,webUrl,folder,parentReference,root`
-      );
-      // Wurzel = ganze Bibliothek (SharePoint „Freigegebene Dokumente“, ITEM_ID=root): Microsoft nennt sie
-      // „root“ → angezeigt wird der vertraute Name aus WORKSPACE_ROOT_FOLDER; Sync zählt dann die ganze Bibliothek.
-      const isDriveRoot = Boolean(item.root);
-      _root = {
-        driveId: ROOT_CONFIG.driveId,
-        itemId: item.id,
-        name: isDriveRoot ? ROOT_CONFIG.folder : item.name,
-        isDriveRoot,
-        webUrl: item.webUrl ?? null,
-        owner: isDriveRoot ? "SharePoint" : ROOT_CONFIG.ownerUpn,
-        ownerUpn: isDriveRoot ? null : ROOT_CONFIG.ownerUpn,
-        resolvedAt: Date.now(),
-      };
+      const item = await client.get(`/drives/${ROOT_CONFIG.driveId}/items/${ROOT_CONFIG.itemId}${ITEM_SELECT}`);
+      _root = toRoot(ROOT_CONFIG.driveId, item);
       return { root: _root };
     } catch (e) {
-      // Gepinnte ids ungültig → weiter zum Bootstrap statt hart zu scheitern.
-      console.error("[workspace] ENV-Pin ungültig, Bootstrap:", e.status ?? e.message);
+      lastStatus = e.status ?? e.message;
+      console.error("[workspace] ENV-Pin nicht lesbar:", lastStatus);
     }
   }
-
-  // 2) Bootstrap über Owner-OneDrive + Ordnername.
-  let drive;
-  try {
-    drive = await client.getUserDrive(ROOT_CONFIG.ownerUpn);
-  } catch (e) {
-    return { root: null, reason: `OneDrive von ${ROOT_CONFIG.ownerUpn} nicht lesbar (${e.status ?? e.message}).` };
-  }
-  try {
-    const item = await client.itemByPath(drive.id, ROOT_CONFIG.folder);
-    _root = {
-      driveId: drive.id,
-      itemId: item.id,
-      name: item.name,
-      webUrl: item.webUrl ?? null,
-      owner: ROOT_CONFIG.ownerUpn,
-      ownerUpn: ROOT_CONFIG.ownerUpn,
-      resolvedAt: Date.now(),
-    };
-    // Hinweis fürs Pinnen in ENV (macht Resolution stabil + unabhängig vom Ordnernamen).
-    console.log(
-      `[workspace] Wurzel aufgelöst: "${item.name}" — zum Pinnen setzen:\n` +
-        `   WORKSPACE_ROOT_DRIVE_ID=${drive.id}\n   WORKSPACE_ROOT_ITEM_ID=${item.id}`
-    );
-    return { root: _root };
-  } catch (e) {
-    // 3) Degradation: Ordner nicht gefunden → Kandidaten anbieten, nicht crashen.
-    let candidates = [];
+  // 2) Über die SharePoint-Seite (z. B. wenn kein Pin gesetzt ist).
+  const m = String(ROOT_CONFIG.site || "").match(/^([^:/]+):(\/sites\/[^/?#]+)$/);
+  if (m) {
     try {
-      const top = await client.listChildren(drive.id, null);
-      candidates = top
-        .filter((n) => n.folder && /nereo/i.test(n.name))
-        .map((n) => ({ name: n.name, itemId: n.id }));
-    } catch {}
-    return {
-      root: null,
-      reason:
-        `Wurzel-Ordner "${ROOT_CONFIG.folder}" im OneDrive von ${ROOT_CONFIG.ownerUpn} nicht gefunden ` +
-        `(${e.status ?? e.message}). WORKSPACE_ROOT_FOLDER prüfen oder ids pinnen.`,
-      candidates,
-    };
+      const site = await client.getSite(m[1], m[2]);
+      const drive = await client.get(`/sites/${site.id}/drive?$select=id`);
+      const item = await client.get(`/drives/${drive.id}/root${ITEM_SELECT}`);
+      _root = toRoot(drive.id, item);
+      console.log(`[workspace] Wurzel über SharePoint-Seite aufgelöst — zum Pinnen: WORKSPACE_ROOT_DRIVE_ID=${drive.id}, WORKSPACE_ROOT_ITEM_ID=root`);
+      return { root: _root };
+    } catch (e) {
+      lastStatus = e.status ?? e.message;
+      console.error("[workspace] SharePoint-Seite nicht lesbar:", lastStatus);
+    }
   }
+  // 3) Klare Meldung statt Rückfall.
+  const hint = lastStatus === 401 || lastStatus === 403
+    ? "Der App fehlen Leserechte in Azure (nereo_os: Files.Read.All + Sites.Read.All, Typ Anwendung)."
+    : "WORKSPACE_ROOT_DRIVE_ID/WORKSPACE_ROOT_SITE prüfen.";
+  return { root: null, reason: `SharePoint-Ablage nicht erreichbar (${lastStatus ?? "keine Einstellung"}). ${hint}`, candidates: [] };
 }
 
 /** Verwirft den Cache (z. B. nach ENV-Änderung). */

@@ -1,4 +1,4 @@
-// @nereoos/graph-client — Microsoft-Graph-Wrapper (SharePoint + OneDrive + Outlook).
+// @nereoos/graph-client — Microsoft-Graph-Wrapper (SharePoint-Dateien + Outlook). Das EINE Microsoft-Tor (Bauregel 5).
 // App-only (client credentials). Dependency-frei (Node >=22 global fetch).
 // LESEN: jederzeit. SCHREIBEN: nur mit Azure-Consent Sites.ReadWrite.All / Mail.Send
 //   und über mutate() — das immer durch die Guardrails läuft (dryRun + Audit-Callback).
@@ -202,17 +202,12 @@ export function createGraphClient(cfg, opts = {}) {
     dryRun,
     writeEnabled,
 
-    // --- Verzeichnis / User ---
-    listUsers: (select = "id,displayName,userPrincipalName,mail,accountEnabled") =>
-      getAll(`/users?$select=${select}&$top=999`),
-
     // --- SharePoint-Sites ---
     listSites: (query = "*") => getAll(`/sites?search=${encodeURIComponent(query)}`),
     getSite: (hostname, sitePath) => request(`/sites/${hostname}:${sitePath}`),
     listSiteDrives: (siteId) => getAll(`/sites/${siteId}/drives?$select=id,name,driveType,webUrl`),
 
-    // --- Drives (OneDrive for Business + Dokumentbibliotheken) ---
-    getUserDrive: (upn) => request(`/users/${upn}/drive?$select=id,driveType,webUrl,quota`),
+    // --- Drives (SharePoint-Dokumentbibliotheken; persönliche OneDrives werden nicht mehr gelesen) ---
     // Ausgeschlossene Namen (Bauregel §3) fallen hier zentral raus — bevor irgendein
     // Aufrufer (Navigation, /api/fs, Analyse-Prüfung) sie zu sehen bekommt.
     listChildren: async (driveId, itemId = null) =>

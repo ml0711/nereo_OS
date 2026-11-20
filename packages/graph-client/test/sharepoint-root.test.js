@@ -16,7 +16,7 @@ test("Bibliothek als Wurzel: vertrauter Name, keine Person als Besitzer", async 
   assert.equal(root.name, "nereo Development Partners");
   assert.equal(root.isDriveRoot, true);
   assert.equal(root.owner, "SharePoint");
-  assert.equal(root.ownerUpn, null);
+  assert.equal("ownerUpn" in root, false);
 });
 
 test("Ordner als Wurzel (wie bisher in OneDrive): unverändert", async () => {

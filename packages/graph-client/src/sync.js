@@ -23,7 +23,7 @@ function itemDrivePath(item) {
 }
 
 // Liegt das geänderte Item unter der Workspace-Wurzel? (Delta läuft über die GANZE Drive —
-// inkl. privater OneDrive-Bereiche; nur Änderungen unter rootName interessieren uns.)
+// im Ordner-Modus nur Änderungen unter rootName; ist die Wurzel die ganze Bibliothek, zählt alles.)
 export function isUnderRoot(item, rootName, rootIsDriveRoot = false) {
   if (rootIsDriveRoot) return true; // Wurzel = ganze Bibliothek → jede Änderung darin zählt
   if (item.name === rootName) return true; // der Workspace-Ordner selbst
@@ -48,7 +48,7 @@ async function rebuildIndexWithSubtree({ driveId, rootName, rootItemId, subtree,
   const workspaceNode = { name: rootName, id: rootItemId, type: "folder", children: subtree };
   let drive = drives.find((d) => d.driveId === driveId);
   if (!drive) {
-    drives.push({ kind: "onedrive", owner: rootName, ownerUpn: null, driveId, driveName: "Documents", webUrl: null, tree: [workspaceNode] });
+    drives.push({ kind: "sharepoint", owner: rootName, ownerUpn: null, driveId, driveName: "Freigegebene Dokumente", webUrl: null, tree: [workspaceNode] });
   } else {
     const tree = Array.isArray(drive.tree) ? [...drive.tree] : [];
     const i = tree.findIndex((n) => n.id === rootItemId || n.name === rootName);

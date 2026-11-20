@@ -1,5 +1,4 @@
-// Vollständiger Read-Only-Export des gesamten lesbaren Bestands:
-// alle User-OneDrives + alle SharePoint-Sites/Bibliotheken, jede Ebene.
+// Read-Only-Export der SharePoint-Ablage (Workspace-Wurzel aus workspace.js), jede Ebene.
 // Schreibt einen Struktur-Index (Metadaten, KEINE Dateiinhalte).
 //
 // KANONISCHER Speicher = App-Postgres: ist DATABASE_URL gesetzt, schreibt der Export
@@ -11,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { graphConfigFromEnv, createGraphClient } from "./index.js";
 import { saveIndex } from "./index-store.js";
+import { resolveRoot } from "./workspace.js";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 function loadRepoEnv() {
@@ -41,40 +41,22 @@ async function main() {
   const index = { generatedAtMs: null, roles: await client.tokenRoles(), drives: [] };
   const grand = { files: 0, folders: 0, bytes: 0, drives: 0, apiDrives: [] };
 
-  async function addDrive(kind, owner, ownerUpn, driveId, driveName, webUrl) {
-    process.stdout.write(`  … crawl ${kind}: ${owner}${driveName ? " › " + driveName : ""} `);
-    try {
-      const tree = await client.walkDrive(driveId, { maxDepth: 30 });
-      const s = summarize(tree);
-      index.drives.push({ kind, owner, ownerUpn, driveId, driveName, webUrl, summary: s, tree });
-      grand.files += s.files; grand.folders += s.folders; grand.bytes += s.bytes; grand.drives++;
-      grand.apiDrives.push({ kind, owner, driveName, ...s });
-      console.log(`→ ${s.files} Dateien, ${s.folders} Ordner, ${gb(s.bytes)} GB (Tiefe ${s.deepest})`);
-    } catch (e) {
-      console.log(`→ ⚠️ ${e.status ?? e.message}`);
-    }
-  }
 
   console.log("Roles:", index.roles.join(", "), "\n");
 
-  console.log("USER-ONEDRIVES");
-  const users = await client.listUsers();
-  for (const u of users) {
-    let drive;
-    try { drive = await client.getUserDrive(u.userPrincipalName); }
-    catch { console.log(`  – ${u.displayName}: kein OneDrive`); continue; }
-    await addDrive("onedrive", u.displayName, u.userPrincipalName, drive.id, "Documents", drive.webUrl);
-  }
-
-  console.log("\nSHAREPOINT-SITES");
-  const sites = await client.listSites("*");
-  for (const site of sites) {
-    let drives = [];
-    try { drives = await client.listSiteDrives(site.id); } catch { continue; }
-    for (const d of drives) {
-      await addDrive("sharepoint", site.displayName, null, d.id, `${d.name} [${d.driveType}]`, d.webUrl);
-    }
-  }
+  console.log("SHAREPOINT-ABLAGE");
+  const { root, reason } = await resolveRoot(client);
+  if (!root) throw new Error(reason);
+  process.stdout.write(`  … crawl ${root.name} `);
+  const subtree = await client.walkDrive(root.driveId, { itemId: root.itemId, maxDepth: 30 });
+  const s = summarize(subtree);
+  index.drives.push({
+    kind: "sharepoint", owner: root.name, ownerUpn: null, driveId: root.driveId, driveName: "Freigegebene Dokumente",
+    webUrl: root.webUrl, summary: s, tree: [{ name: root.name, id: root.itemId, type: "folder", children: subtree }],
+  });
+  grand.files += s.files; grand.folders += s.folders; grand.bytes += s.bytes; grand.drives++;
+  grand.apiDrives.push({ kind: "sharepoint", owner: root.name, driveName: "", ...s });
+  console.log(`→ ${s.files} Dateien, ${s.folders} Ordner, ${gb(s.bytes)} GB (Tiefe ${s.deepest})`);
 
   index.generatedAtMs = Date.now();
   const secs = Number(process.hrtime.bigint() - t0) / 1e9;

@@ -548,7 +548,7 @@ function renderDegraded(d){
   $("#crumbs").innerHTML=""; $("#ctxHead").innerHTML="";
   $("#view").innerHTML=`<div class="cfg"><h2>Workspace-Wurzel nicht gefunden</h2>
     <p>${esc(d.reason||"Die fixe Wurzel konnte nicht aufgelöst werden.")}</p>
-    ${(d.candidates&&d.candidates.length)?`<p class="note">Mögliche Kandidaten im OneDrive:</p><ul>${d.candidates.map(c=>`<li><b>${esc(c.name)}</b> — <code>${esc(c.itemId)}</code></li>`).join("")}</ul>`:""}
+    ${(d.candidates&&d.candidates.length)?`<p class="note">Mögliche Kandidaten:</p><ul>${d.candidates.map(c=>`<li><b>${esc(c.name)}</b> — <code>${esc(c.itemId)}</code></li>`).join("")}</ul>`:""}
     <p class="note">Setze <code>WORKSPACE_ROOT_DRIVE_ID</code> + <code>WORKSPACE_ROOT_ITEM_ID</code> (oder <code>WORKSPACE_ROOT_FOLDER</code>) in der App-Umgebung und lade neu.</p></div>`;
 }
 async function bootWorkspace(){

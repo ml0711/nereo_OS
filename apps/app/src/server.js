@@ -353,7 +353,7 @@ async function reconcileSelf() {
     const notificationUrl = `${APP_BASE_URL.replace(/\/$/, "")}/api/graph/webhook`;
     const r = await reconcileSubscription({ client: navClient(), driveId: root.driveId, notificationUrl });
     if (r.action !== "noop") console.log(`[subscription] ${r.action} · id=${r.id} · gültig bis ${r.expiration}`);
-    // Nach einem Umzug der Wurzel (OneDrive → SharePoint) die Überwachung des alten Orts beenden.
+    // Nach einem Wechsel des Speicherorts die Überwachung des alten Orts beenden.
     const retired = await retireOtherSubscriptions({ client: navClient(), keepDriveId: root.driveId });
     if (retired) console.log(`[subscription] ${retired} alte Subscription(s) auf früherem Speicherort beendet`);
     return true; // gültige Subscription bestätigt (created/renewed/recreated/noop)
@@ -1047,7 +1047,7 @@ app.get("/api/workspace", requireAuth, async (req, res) => {
         return { name: k.name, path: k.name, type: "folder", itemId: k.id, company: company.key, webUrl: k.webUrl ?? null, childCount: k.folder?.childCount ?? null, capability: cap };
       });
     res.json({
-      root: { name: root.name, driveId: root.driveId, itemId: root.itemId, webUrl: root.webUrl, owner: root.owner, ownerUpn: root.ownerUpn },
+      root: { name: root.name, driveId: root.driveId, itemId: root.itemId, webUrl: root.webUrl, owner: root.owner },
       nav,
       writeEnabled: GRAPH_WRITE_ENABLED,
       cachedAt: root.resolvedAt,

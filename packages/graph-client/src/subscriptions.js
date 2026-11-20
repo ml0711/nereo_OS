@@ -77,7 +77,7 @@ export async function reconcileSubscription({ client, driveId, notificationUrl }
 
 /**
  * Beendet Subscriptions auf anderen Drives als der aktuellen Wurzel (z. B. nach dem Umzug von
- * Vascos OneDrive auf die SharePoint-Seite). Sonst bliebe die alte bis zum Ablauf aktiv und /healthz
+ * Vascos OneDrive auf die SharePoint-Seite, 2026-11-20). Sonst bliebe die alte bis zum Ablauf aktiv und /healthz
  * zeigte sie an. Graph-Löschen best-effort, die DB-Zeile wird immer entfernt.
  * @returns {Promise<number>} Anzahl beendeter Subscriptions
  */
