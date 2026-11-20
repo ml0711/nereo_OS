@@ -21,6 +21,9 @@ import { buildSearchIndex, queryIndex, computeFacets, recentlyModified, latestMo
 import { resolveCapability, serializeCapability } from "../../../packages/graph-client/src/structure.js";
 import { deltaThenRewalkAndSave } from "../../../packages/graph-client/src/sync.js";
 import { logActivity, loadActivity, loadActivityUsers, pruneActivity } from "../../../packages/graph-client/src/index-store.js";
+import { msConfigFromEnv, createMicrosoftAccess } from "./microsoft.js";
+import { saveMsToken, loadMsToken, deleteMsToken } from "../../../packages/graph-client/src/index-store.js";
+import { isAdmin } from "./verwaltung.js";
 import { createRecorder, activityMiddleware, mountVerwaltung, adminNavLink, retentionMonths } from "./verwaltung.js";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
@@ -136,7 +139,45 @@ async function cachedChild(client, driveId, parentId, name) {
 // SPÄTER (Login je Person, delegierter Graph-Token): hier req.session.user.sub zurückgeben, DANN
 // filtert Microsoft selbst UND der Zwischenspeicher ist automatisch je Person getrennt (der
 // Cache-Schlüssel ist `Person|Laufwerk|Ordner`). Zweite Umbaustelle: navClient() → per-User-Client.
-function principalOf(_req) { return "shared"; }
+function principalOf(req) { return MS.enabled ? `u:${req.session?.user?.sub}` : "shared"; }
+
+// ---------- Lesen je Person (delegiert, Schalter DELEGATED_ACCESS=1) ----------
+// AN: Datenräume/Projekte/Suche/Startseite lesen mit dem Microsoft-Zugang der angemeldeten Person →
+// jede Person sieht nur, was sie in SharePoint sehen darf. Fehlt der Zugang oder ist die Einstellung
+// unvollständig, wird NICHTS ausgeliefert (kein Rückfall auf den App-Zugang). AUS: wie bisher (App-Zugang).
+// Die Wurzel-ids und die Echtzeit-Überwachung bleiben beim App-Zugang (keine Inhalte an Nutzer).
+const MS = msConfigFromEnv(process.env);
+if (MS.enabled && !MS.ready) console.error("[microsoft] DELEGATED_ACCESS=1, aber unvollständig:", MS.problems.join(", "), "→ Inhalte gesperrt");
+const msAccess = MS.ready ? createMicrosoftAccess({
+  cfg: MS, store: { save: saveMsToken, load: loadMsToken, remove: deleteMsToken },
+}) : null;
+const _userClients = new Map();
+function contentClient(req) {
+  if (!MS.enabled) return navClient();
+  if (!msAccess) throw Object.assign(new Error("Microsoft-Zugang je Person ist nicht vollständig eingerichtet."), { status: 503 });
+  const sub = req.session?.user?.sub;
+  let c = _userClients.get(sub);
+  if (!c) {
+    c = createGraphClient({}, { tokenProvider: () => msAccess.accessToken(sub) });
+    _userClients.set(sub, c);
+    if (_userClients.size > 2000) _userClients.clear();
+  }
+  return c;
+}
+// Seiten mit Inhalten: ohne Microsoft-Zugang erst verbinden (meist unsichtbar, Microsoft kennt die Person schon).
+async function requireMicrosoft(req, res, next) {
+  if (!MS.enabled) return next();
+  if (!msAccess) return res.status(503).send(renderPage("", "Nicht verfügbar", `<div class="empty">Die Anbindung an SharePoint ist gerade nicht vollständig eingerichtet.</div>`));
+  try { if (await msAccess.accessToken(req.session.user.sub)) return next(); }
+  catch (e) { console.error("[microsoft] Zugang:", e.message); }
+  res.redirect("/microsoft/verbinden?next=" + encodeURIComponent(req.path));
+}
+// Alte Ansichten aus dem gemeinsamen Index (/workspace, /api/datarooms…) würden alles zeigen → bei AN nur Admins.
+function legacyGuard(req, res, next) {
+  if (!MS.enabled || isAdmin(req.session?.user)) return next();
+  if (req.path.startsWith("/api/")) return res.status(403).json({ error: "Nicht verfügbar." });
+  res.status(404).send(renderPage("", "Seite nicht gefunden", `<div class="empty">Diese Seite gibt es nicht.</div>`));
+}
 
 // Ergebnis-Zwischenspeicher EINER Ebene (Kinderliste), je (Person, Laufwerk, Ordner). In-Memory
 // (kein neuer Dienst, keine DB); die App läuft als EIN Container. 60s: zweites Öffnen ist sofort da,
@@ -171,7 +212,7 @@ const SEARCH_TTL_MS = 10 * 60 * 1000;
 const _searchIndex = new Map(); // principal -> { rows, facets, builtAt, building:Promise|null }
 
 async function buildSearchIndexNow(client) {
-  const { root, reason } = await resolveRoot(client);
+  const { root, reason } = await resolveRoot(navClient());
   if (!root) { const e = new Error(reason || "Workspace-Wurzel nicht auflösbar."); e.status = 503; throw e; }
   const kids = await client.listChildren(root.driveId, root.itemId);
   const companies = pickCompanies(kids); // Erlaubnisliste + Ausschlüsse (Bauregel §2/§3)
@@ -410,7 +451,7 @@ app.get("/callback", async (req, res) => {
     req.session.pkce = undefined;
     req.session.state = undefined;
     recordActivity(req, "anmeldung", null, { dedupe: false });
-    res.redirect("/");
+    res.redirect(MS.enabled ? "/microsoft/verbinden" : "/");
   } catch (e) {
     res.status(500).send('Login-Fehler. <a href="/login">neu</a>');
   }
@@ -422,6 +463,7 @@ app.get("/logout", (req, res) => {
   // durch und der User landet sofort wieder im Dashboard ("trotzdem eingeloggt").
   const idToken = req.session?.idToken;
   recordActivity(req, "abmeldung", null, { dedupe: false });
+  if (msAccess && req.session?.user?.sub) msAccess.forget(req.session.user.sub).catch((e) => console.error("[microsoft] löschen:", e.message));
   req.session = null;
   if (!AUTH_CONFIGURED) return res.redirect("/");
   const u = new URL(`${ISSUER}/session/end`);
@@ -823,7 +865,7 @@ for (const it of NAV_ACTIVE)
 
 // „Dashboard" (Startseite): KPI-Kacheln mit Handlungsaussage + zwei Listen (in der festen Shell).
 // Gegated wie alle Seiten. Logik lädt /dashboard.js (holt /api/dashboard). Nur lesen, kein KI-Knopf.
-app.get("/", requireAuth, (_req, res) =>
+app.get("/", requireAuth, requireMicrosoft, (_req, res) =>
   sendHtml(res, renderPage("dashboard", "Dashboard", DASHBOARD_MAIN)));
 app.get("/dashboard.js", (_req, res) => {
   res.set("content-type", "application/javascript; charset=utf-8");
@@ -832,7 +874,7 @@ app.get("/dashboard.js", (_req, res) => {
 });
 
 // „Projekte": Übersicht + Projektseite (in der festen Shell). Gegated wie alle Seiten.
-app.get("/projekte", requireAuth, (_req, res) =>
+app.get("/projekte", requireAuth, requireMicrosoft, (_req, res) =>
   sendHtml(res, renderPage("projekte", "Projekte", PROJEKTE_MAIN)));
 app.get("/projekte.js", (_req, res) => {
   res.set("content-type", "application/javascript; charset=utf-8");
@@ -841,7 +883,7 @@ app.get("/projekte.js", (_req, res) => {
 });
 
 // „Datenräume": Ordner-/Datei-Browser je Gesellschaft (in der festen Shell). Gegated wie alle Seiten.
-app.get("/datenraeume", requireAuth, (_req, res) =>
+app.get("/datenraeume", requireAuth, requireMicrosoft, (_req, res) =>
   sendHtml(res, renderPage("datenraeume", "Datenräume", DATENRAEUME_MAIN)));
 // Seiten-Skript (statisch, wie logo/inter). Nicht sensibel — ruft nur die gegateten APIs auf.
 app.get("/datenraeume.js", (_req, res) => {
@@ -860,8 +902,27 @@ app.get("/modul/:slug", requireAuth, (req, res) => {
 // Übergangsseite: die bisherige, live gespiegelte SharePoint-Ansicht — UNVERÄNDERT übernommen.
 // Entscheidung Mike, 28.09.2026: wird Grundlage der Seite „Datenräume" und danach entfernt.
 // Gleich gegated wie alle anderen Seiten (requireAuth -> /login). Nicht in der Seitenleiste beworben.
-app.get("/workspace", requireAuth, (_req, res) =>
+app.get("/workspace", requireAuth, legacyGuard, (_req, res) =>
   sendHtml(res, readFileSync(resolve(__dir, "public/workspace.html"), "utf8")));
+
+app.get("/microsoft/verbinden", requireAuth, (req, res) => {
+  if (!msAccess) return res.redirect("/");
+  res.redirect(msAccess.authorizeUrl(req.session, typeof req.query.next === "string" ? req.query.next : "/"));
+});
+app.get("/microsoft/callback", requireAuth, async (req, res) => {
+  if (!msAccess) return res.redirect("/");
+  try {
+    const r = await msAccess.finish(req.session, req.query);
+    if (r.ok) return res.redirect(r.next);
+    const text = r.reason === "konto"
+      ? "Das Microsoft-Konto passt nicht zu deiner Anmeldung. Bitte mit demselben Firmenkonto anmelden."
+      : "Die Verbindung zu Microsoft hat nicht geklappt.";
+    res.status(403).send(renderPage("", "Microsoft-Verbindung", `<div class="empty">${text} <a href="/microsoft/verbinden">Nochmal versuchen</a> · <a href="/logout">Abmelden</a></div>`));
+  } catch (e) {
+    console.error("[microsoft] callback:", e.message);
+    res.status(502).send(renderPage("", "Microsoft-Verbindung", `<div class="empty">Microsoft ist gerade nicht erreichbar. <a href="/microsoft/verbinden">Nochmal versuchen</a></div>`));
+  }
+});
 
 app.get("/api/me", requireAuth, (req, res) => res.json({ user: req.session.user }));
 
@@ -884,7 +945,7 @@ async function loadIndex() {
   } catch { return null; }
 }
 
-app.get("/api/datarooms", requireAuth, async (req, res) => {
+app.get("/api/datarooms", requireAuth, legacyGuard, async (req, res) => {
   const loaded = await loadIndex();
   if (!loaded) return res.status(503).json({ error: "Kein Graph-Index (Postgres leer + keine Datei). 'graph:export' + Seed nötig." });
   const { index, source } = loaded;
@@ -925,8 +986,8 @@ async function analyzeHandler(req, res) {
     catch (e) { return res.status(400).json({ error: e.message }); }
     if (!segments.length) return res.status(400).json({ error: "Live-Analyse braucht ?path=<Datenraum>." });
     try {
-      const client = navClient();
-      const { root, reason } = await resolveRoot(client);
+      const client = contentClient(req);
+      const { root, reason } = await resolveRoot(navClient());
       if (!root) return res.status(503).json({ error: reason || "Workspace-Wurzel nicht auflösbar." });
       const target = await descend(client, root, segments);
       // Analysierbarkeit prüfen (gleiche Logik wie /api/fs): nur Positionen mit live-room-Strategie
@@ -960,18 +1021,18 @@ async function analyzeHandler(req, res) {
   if (!bySecret) return res.status(400).json({ error: "Bulk-Analyse nur per Secret (Header X-Analyze-Token). Nutze ?path= oder ?project= (Token-Schutz)." });
   return res.json(await analyzeMissing({ force }));
 }
-app.get("/api/datarooms/analyze", limit(analyzeBudget, "Zu viele Analyse-Anfragen — kurz warten."), analyzeHandler);
-app.post("/api/datarooms/analyze", limit(analyzeBudget, "Zu viele Analyse-Anfragen — kurz warten."), analyzeHandler);
+app.get("/api/datarooms/analyze", legacyGuard, limit(analyzeBudget, "Zu viele Analyse-Anfragen — kurz warten."), analyzeHandler);
+app.post("/api/datarooms/analyze", legacyGuard, limit(analyzeBudget, "Zu viele Analyse-Anfragen — kurz warten."), analyzeHandler);
 
 // GET /api/workspace — die FIXE Wurzel + ihre Top-Level-Kinder als Sidebar-Sektionen.
 // Einmal beim Boot der Shell. Degradiert (200 + root:null + candidates) statt zu crashen,
 // wenn die Wurzel nicht auflösbar ist — die UI zeigt dann einen Konfig-Hinweis.
 app.get("/api/workspace", requireAuth, async (req, res) => {
   let client;
-  try { client = navClient(); }
+  try { client = contentClient(req); }
   catch (e) { return res.status(503).json({ error: `Graph nicht konfiguriert: ${e.message}` }); }
   try {
-    const { root, reason, candidates } = await resolveRoot(client, { force: req.query.refresh === "1" });
+    const { root, reason, candidates } = await resolveRoot(navClient(), { force: req.query.refresh === "1" });
     if (!root) return res.json({ root: null, reason, candidates: candidates ?? [] });
     const kids = await client.listChildren(root.driveId, root.itemId);
     // Erlaubnisliste (Bauregel §2/§3): NUR die konfigurierten Gesellschaften, in
@@ -1000,12 +1061,12 @@ app.get("/api/workspace", requireAuth, async (req, res) => {
 // Liefert Kinder + Breadcrumb + die ortsabhängige Capability (View + Aktionen).
 app.get("/api/fs", requireAuth, limit(navBudget, "Zu viele Navigations-Anfragen — kurz warten."), async (req, res) => {
   let client, segments;
-  try { client = navClient(); }
+  try { client = contentClient(req); }
   catch (e) { return res.status(503).json({ error: `Graph nicht konfiguriert: ${e.message}` }); }
   try { segments = safeRelSegments(req.query.path); }
   catch (e) { return res.status(400).json({ error: e.message }); }
   try {
-    const { root, reason } = await resolveRoot(client);
+    const { root, reason } = await resolveRoot(navClient());
     if (!root) return res.status(503).json({ error: reason || "Workspace-Wurzel nicht auflösbar." });
     const isRoot = segments.length === 0;
     const refresh = req.query.refresh === "1";
@@ -1072,12 +1133,12 @@ app.get("/api/fs", requireAuth, limit(navBudget, "Zu viele Navigations-Anfragen 
 // Analysekatalog A00–A17 (Ebene 1: deterministisch, KEINE KI, kein Token-Verbrauch).
 app.get("/api/projekte", requireAuth, limit(navBudget, "Zu viele Anfragen — kurz warten."), async (req, res) => {
   let client, segments;
-  try { client = navClient(); }
+  try { client = contentClient(req); }
   catch (e) { return res.status(503).json({ error: `Graph nicht konfiguriert: ${e.message}` }); }
   try { segments = safeRelSegments(req.query.path); }
   catch (e) { return res.status(400).json({ error: e.message }); }
   try {
-    const { root, reason } = await resolveRoot(client);
+    const { root, reason } = await resolveRoot(navClient());
     if (!root) return res.status(503).json({ error: reason || "Workspace-Wurzel nicht auflösbar." });
     const target = await descend(client, root, segments);
     const catalog = await loadAnalysisCatalog(client, root);
@@ -1101,13 +1162,13 @@ app.get("/api/projekte", requireAuth, limit(navBudget, "Zu viele Anfragen — ku
 // GET /api/projekt?path=<rel zu einem Projekt> — Detailstatus A00–A17 dieses Projekts (Ebene 1).
 app.get("/api/projekt", requireAuth, limit(navBudget, "Zu viele Anfragen — kurz warten."), async (req, res) => {
   let client, segments;
-  try { client = navClient(); }
+  try { client = contentClient(req); }
   catch (e) { return res.status(503).json({ error: `Graph nicht konfiguriert: ${e.message}` }); }
   try { segments = safeRelSegments(req.query.path); }
   catch (e) { return res.status(400).json({ error: e.message }); }
   if (!segments.length) return res.status(400).json({ error: "Bitte ein Projekt angeben (?path=…)." });
   try {
-    const { root, reason } = await resolveRoot(client);
+    const { root, reason } = await resolveRoot(navClient());
     if (!root) return res.status(503).json({ error: reason || "Workspace-Wurzel nicht auflösbar." });
     const target = await descend(client, root, segments);
     const catalog = await loadAnalysisCatalog(client, root);
@@ -1135,7 +1196,7 @@ app.get("/api/projekt", requireAuth, limit(navBudget, "Zu viele Anfragen — kur
 // Tor) → 90_Personal…/_ZU_LOESCHEN…/.DS_Store sind nie enthalten (Bauregel §3, siehe search.test.js).
 app.get("/api/search", requireAuth, limit(navBudget, "Zu viele Such-Anfragen — kurz warten."), async (req, res) => {
   let client;
-  try { client = navClient(); }
+  try { client = contentClient(req); }
   catch (e) { return res.status(503).json({ error: `Graph nicht konfiguriert: ${e.message}` }); }
   try {
     const principal = principalOf(req);
@@ -1160,10 +1221,10 @@ app.get("/api/search", requireAuth, limit(navBudget, "Zu viele Such-Anfragen —
 // (90_Personal…/_ZU_LOESCHEN…/.DS_Store) sind zentral im Tor schon entfernt, bevor hier etwas ankommt.
 app.get("/api/dashboard", requireAuth, limit(navBudget, "Zu viele Anfragen — kurz warten."), async (req, res) => {
   let client;
-  try { client = navClient(); }
+  try { client = contentClient(req); }
   catch (e) { return res.status(503).json({ error: `Graph nicht konfiguriert: ${e.message}` }); }
   try {
-    const { root, reason } = await resolveRoot(client);
+    const { root, reason } = await resolveRoot(navClient());
     if (!root) return res.status(503).json({ error: reason || "Workspace-Wurzel nicht auflösbar." });
     const principal = principalOf(req);
     const refresh = req.query.refresh === "1";

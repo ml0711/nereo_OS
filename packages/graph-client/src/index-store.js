@@ -390,3 +390,38 @@ export async function pruneActivity(months = 12) {
   const { rowCount } = await p.query(`DELETE FROM activity_log WHERE at < now() - make_interval(months => $1::int)`, [months]);
   return rowCount;
 }
+
+// ---------- Microsoft-Zugang je Person (verschlüsselt, siehe apps/app/src/microsoft.js) ----------
+let msTokenSchemaReady = false;
+async function ensureMsTokenSchema() {
+  if (msTokenSchemaReady) return;
+  const p = await getPool();
+  await p.query(`
+    CREATE TABLE IF NOT EXISTS ms_delegated_token (
+      sub        text PRIMARY KEY,           -- LogTo-Nutzer
+      oid        text,                       -- Microsoft-Objekt-ID (nur zur Nachvollziehbarkeit)
+      enc        text NOT NULL,              -- AES-256-GCM-verschlüsselter refresh token
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )`);
+  msTokenSchemaReady = true;
+}
+export async function saveMsToken(sub, { oid = null, enc }) {
+  await ensureMsTokenSchema();
+  const p = await getPool();
+  await p.query(
+    `INSERT INTO ms_delegated_token (sub, oid, enc, updated_at) VALUES ($1,$2,$3,now())
+     ON CONFLICT (sub) DO UPDATE SET oid = EXCLUDED.oid, enc = EXCLUDED.enc, updated_at = now()`,
+    [sub, oid, enc]
+  );
+}
+export async function loadMsToken(sub) {
+  await ensureMsTokenSchema();
+  const p = await getPool();
+  const { rows } = await p.query(`SELECT oid, enc FROM ms_delegated_token WHERE sub = $1`, [sub]);
+  return rows[0] ?? null;
+}
+export async function deleteMsToken(sub) {
+  await ensureMsTokenSchema();
+  const p = await getPool();
+  await p.query(`DELETE FROM ms_delegated_token WHERE sub = $1`, [sub]);
+}

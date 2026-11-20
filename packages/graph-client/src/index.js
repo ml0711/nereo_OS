@@ -91,7 +91,11 @@ export function createGraphClient(cfg, opts = {}) {
     dryRun = false,
     onWrite,
     writeEnabled = process.env.GRAPH_WRITE_ENABLED === "1",
+    // Delegierter Zugang (je Person): liefert ein gültiges Microsoft-Access-Token. Dann ist der
+    // Client IMMER nur-lesend — Schreiben läuft ausschließlich über den App-Client mit Guardrails.
+    tokenProvider = null,
   } = opts;
+  const readOnly = Boolean(tokenProvider);
   let token = null;
   let expiresAt = 0;
 
@@ -102,6 +106,11 @@ export function createGraphClient(cfg, opts = {}) {
   }
 
   async function authHeader() {
+    if (tokenProvider) {
+      const t = await tokenProvider();
+      if (!t) { const e = new Error("Microsoft-Zugang der Person fehlt"); e.status = 401; e.reconnect = true; throw e; }
+      return `Bearer ${t}`;
+    }
     const now = Date.now();
     if (!token || now >= expiresAt) {
       const t = await getAppToken(cfg);
@@ -145,6 +154,7 @@ export function createGraphClient(cfg, opts = {}) {
   // läuft immer durch Guardrails: dryRun stoppt vor dem Netzwerk, audit() protokolliert.
   // body: JSON-Objekt (-> application/json) ODER Buffer/Uint8Array (-> contentType).
   async function mutate(method, path, { json, body, contentType, label } = {}) {
+    if (readOnly) throw Object.assign(new Error("Dieser Zugang ist nur zum Lesen."), { status: 403 });
     const op = { method, path, label: label ?? path };
     if (dryRun) {
       await audit({ ...op, status: "dry-run" });
