@@ -279,7 +279,7 @@ async function processDirtyOnce() {
           const { root } = await resolveRoot(navClient());
           if (!root || root.driveId !== claimed.drive_id) { await finishProcessing(claimed.id, {}); continue; }
           const r = await deltaThenRewalkAndSave({
-            client: navClient(), driveId: root.driveId, rootItemId: root.itemId, rootName: root.name,
+            client: navClient(), driveId: root.driveId, rootItemId: root.itemId, rootName: root.name, rootIsDriveRoot: root.isDriveRoot,
             subscriptionId: claimed.id, prevToken: claimed.delta_token,
           });
           await finishProcessing(claimed.id, { lastSyncAt: new Date() });
@@ -308,10 +308,13 @@ async function reconcileSelf() {
   try {
     const { root } = await resolveRoot(navClient());
     if (!root) return false;
-    const { reconcileSubscription } = await import("../../../packages/graph-client/src/subscriptions.js");
+    const { reconcileSubscription, retireOtherSubscriptions } = await import("../../../packages/graph-client/src/subscriptions.js");
     const notificationUrl = `${APP_BASE_URL.replace(/\/$/, "")}/api/graph/webhook`;
     const r = await reconcileSubscription({ client: navClient(), driveId: root.driveId, notificationUrl });
     if (r.action !== "noop") console.log(`[subscription] ${r.action} · id=${r.id} · gültig bis ${r.expiration}`);
+    // Nach einem Umzug der Wurzel (OneDrive → SharePoint) die Überwachung des alten Orts beenden.
+    const retired = await retireOtherSubscriptions({ client: navClient(), keepDriveId: root.driveId });
+    if (retired) console.log(`[subscription] ${retired} alte Subscription(s) auf früherem Speicherort beendet`);
     return true; // gültige Subscription bestätigt (created/renewed/recreated/noop)
   } catch (e) {
     console.error("[subscription] reconcile:", e.status ?? "", e.message);
@@ -345,7 +348,7 @@ async function pollOnce() {
     }
     try {
       const r = await deltaThenRewalkAndSave({
-        client: navClient(), driveId: root.driveId, rootItemId: root.itemId, rootName: root.name,
+        client: navClient(), driveId: root.driveId, rootItemId: root.itemId, rootName: root.name, rootIsDriveRoot: root.isDriveRoot,
         subscriptionId: claimed.id, prevToken: claimed.delta_token,
       });
       if (r.changed) console.log(`[poll] ${r.items} Änderung(en), ${r.affected.length} Datenraum/-räume markiert`);

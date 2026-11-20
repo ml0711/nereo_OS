@@ -24,7 +24,8 @@ function itemDrivePath(item) {
 
 // Liegt das geänderte Item unter der Workspace-Wurzel? (Delta läuft über die GANZE Drive —
 // inkl. privater OneDrive-Bereiche; nur Änderungen unter rootName interessieren uns.)
-function isUnderRoot(item, rootName) {
+export function isUnderRoot(item, rootName, rootIsDriveRoot = false) {
+  if (rootIsDriveRoot) return true; // Wurzel = ganze Bibliothek → jede Änderung darin zählt
   if (item.name === rootName) return true; // der Workspace-Ordner selbst
   const p = itemDrivePath(item);
   if (!p) return false;
@@ -65,7 +66,7 @@ async function rebuildIndexWithSubtree({ driveId, rootName, rootItemId, subtree,
  * @returns { changed, bootstrap?, affected, deltaToken, items }
  * WICHTIG: Reihenfolge saveIndex+markRoomChanged ZUERST, saveDeltaToken DANACH (Crash-Sicherheit).
  */
-export async function deltaThenRewalkAndSave({ client, driveId, rootItemId, rootName, subscriptionId, prevToken = null, force = false }) {
+export async function deltaThenRewalkAndSave({ client, driveId, rootItemId, rootName, rootIsDriveRoot = false, subscriptionId, prevToken = null, force = false }) {
   // Erstlauf ohne Token: nur Bootstrap-Token holen (kein Itemstrom, kein Re-Walk — Index ist aktuell aus dem Voll-Crawl).
   if (!prevToken && !force) {
     const { deltaToken } = await client.driveDelta(driveId, "latest");
@@ -84,7 +85,7 @@ export async function deltaThenRewalkAndSave({ client, driveId, rootItemId, root
     fullResync = true;
     delta = await client.driveDelta(driveId, null);
   }
-  const relevant = delta.items.filter((it) => isUnderRoot(it, rootName));
+  const relevant = delta.items.filter((it) => isUnderRoot(it, rootName, rootIsDriveRoot));
   // Re-Walk bei relevanten Änderungen ODER Full-Resync (Index muss aktuell werden); sonst nur Token.
   if (!relevant.length && !fullResync) {
     if (delta.deltaToken) await saveDeltaToken(subscriptionId, delta.deltaToken);

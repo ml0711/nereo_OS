@@ -4,7 +4,7 @@
 
 import { randomBytes } from "node:crypto";
 import {
-  loadSubscriptionByDrive, saveSubscription, updateExpiration,
+  loadSubscriptionByDrive, saveSubscription, updateExpiration, loadActiveSubscriptions,
   deleteSubscription as storeDeleteSubscription,
 } from "./index-store.js";
 
@@ -73,4 +73,22 @@ export async function reconcileSubscription({ client, driveId, notificationUrl }
   }
 
   return { action: "noop", id: existing.id, expiration: existing.expiration };
+}
+
+/**
+ * Beendet Subscriptions auf anderen Drives als der aktuellen Wurzel (z. B. nach dem Umzug von
+ * Vascos OneDrive auf die SharePoint-Seite). Sonst bliebe die alte bis zum Ablauf aktiv und /healthz
+ * zeigte sie an. Graph-Löschen best-effort, die DB-Zeile wird immer entfernt.
+ * @returns {Promise<number>} Anzahl beendeter Subscriptions
+ */
+export async function retireOtherSubscriptions({ client, keepDriveId, list = loadActiveSubscriptions, remove = storeDeleteSubscription }) {
+  if (!keepDriveId) return 0;
+  let n = 0;
+  for (const s of await list()) {
+    if (!s.drive_id || s.drive_id === keepDriveId) continue;
+    try { await client.deleteSubscription(s.id); } catch {}
+    await remove(s.id);
+    n++;
+  }
+  return n;
 }

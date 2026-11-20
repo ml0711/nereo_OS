@@ -131,15 +131,19 @@ async function _resolveRoot(client) {
     try {
       const item = await client.get(
         `/drives/${ROOT_CONFIG.driveId}/items/${ROOT_CONFIG.itemId}` +
-          `?$select=id,name,webUrl,folder,parentReference`
+          `?$select=id,name,webUrl,folder,parentReference,root`
       );
+      // Wurzel = ganze Bibliothek (SharePoint „Freigegebene Dokumente“, ITEM_ID=root): Microsoft nennt sie
+      // „root“ → angezeigt wird der vertraute Name aus WORKSPACE_ROOT_FOLDER; Sync zählt dann die ganze Bibliothek.
+      const isDriveRoot = Boolean(item.root);
       _root = {
         driveId: ROOT_CONFIG.driveId,
         itemId: item.id,
-        name: item.name,
+        name: isDriveRoot ? ROOT_CONFIG.folder : item.name,
+        isDriveRoot,
         webUrl: item.webUrl ?? null,
-        owner: item.parentReference?.driveId ? ROOT_CONFIG.ownerUpn : ROOT_CONFIG.ownerUpn,
-        ownerUpn: ROOT_CONFIG.ownerUpn,
+        owner: isDriveRoot ? "SharePoint" : ROOT_CONFIG.ownerUpn,
+        ownerUpn: isDriveRoot ? null : ROOT_CONFIG.ownerUpn,
         resolvedAt: Date.now(),
       };
       return { root: _root };
