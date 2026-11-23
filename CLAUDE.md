@@ -12,7 +12,7 @@ Es ist die **Intelligenz-, Bedien- UND Aktionsschicht** über den bestehenden Pr
 
 - **Dokumente bleiben in Microsoft 365 / SharePoint.** Dort ist und bleibt die Single Source of Truth.
 - nereo OS **liest** diese Daten, zeigt Status, und lässt **KI-Agenten** definierte Analysen darauf laufen.
-- nereo OS **schreibt auch gezielt zurück** in SharePoint/Outlook (Dateien, Ordner, Status-/Metadaten-Spalten, Mail) — aber **abgesichert**: Mensch-im-Loop (Dry-run-Default), lückenloses Audit-Log, Ops-Kill-Switch. **Keine** Dauerkopien — geschrieben wird in die SSoT selbst, nicht in einen Zweitspeicher.
+- nereo OS **soll später gezielt zurückschreiben** in SharePoint/Outlook (Dateien, Ordner, Status-/Metadaten-Spalten, Mail) — aber **abgesichert**: Mensch-im-Loop (Dry-run-Default), lückenloses Audit-Log, Ops-Kill-Switch. **Keine** Dauerkopien — geschrieben wird in die SSoT selbst, nicht in einen Zweitspeicher. **Stand 2026-11-23: Schreiben ist technisch AUS** — keine Schreibrechte in Azure, Kill-Switch aus, Zugang je Person nur lesend. Ein im Portal angelegter Ordner erscheint also (noch) nicht in SharePoint; jede Schreibfunktion braucht Mikes ausdrückliche Freigabe (Bauregel 4), siehe „Architektur auf einen Blick“.
 
 Merksatz: **SharePoint speichert. nereo OS denkt, zeigt — und handelt (kontrolliert).**
 
@@ -40,6 +40,24 @@ Kunden sind Pensionskassen/Versicherer → **Datenresidenz CH/EU** für VPS, DB 
 ---
 
 ## 3. Komponenten / Services
+
+### Architektur auf einen Blick (Stand 2026-11-23)
+```
+Person ──Login──▶ LogTo (auth.nereo-os.de) ──▶ Microsoft (Login-App „nereo.auth“ …87e0, nur Firmen-Tenant)
+   │                                                     │
+   ▼                                                     ▼
+nereo OS (app.nereo-os.de) ──/microsoft/verbinden──▶ Microsoft-Zugang DER PERSON (delegiert, nur Lesen)
+   │  Datenräume · Projekte · Suche · Startseite  ──liest mit Zugang der Person──▶ SharePoint „nereo.datenraum“
+   │  Wurzel-ids · Echtzeit-Überwachung · Regeldateien  ──App-Zugang „nereo_os“ (Files/Sites.Read.All)──▶ (dieselbe Seite)
+   ▼
+App-Postgres (nereo_app): Index, Aktivitäts-Protokoll, verschlüsselte Microsoft-Zugänge, Schreib-Audit — KEINE Dokumente
+```
+- **Quelle aller Dateien:** SharePoint-Seite `nereo.datenraum`, Bibliothek „Freigegebene Dokumente“. Persönliche OneDrives liest die App nicht (kein Rückfall).
+- **Wer rein darf:** Zuweisung der Login-App in Azure (Unternehmensanwendungen). **Wer was sieht:** die SharePoint-Rechte der Person (delegiert) minus Ausschlüsse (Bauregel 3).
+- **Lesen vs. Schreiben:** Lesen läuft. Schreiben (Ordner anlegen, Upload, Metadaten, Mail) ist **AUS**: keine Schreibrechte in Azure, `GRAPH_WRITE_ENABLED` aus, `/api/write/*` liefert 503. Freischalten nur je Funktion mit Mikes OK; dann **im Namen der Person** (delegiertes Schreibrecht auf „nereo.auth“, begrenzt durch ihre SharePoint-Rechte) statt mit dem App-Zugang, mit Bestätigung + Audit.
+- **Echtzeit:** Graph-Webhook + 20-Min-Abgleich auf der Bibliothek; Inhalte für Personen werden live gelesen, Zwischenspeicher je Person (60 s Ebene, 10 Min Suche/Projekte).
+- **Regeldateien** (`_ANALYSEKATALOG.md`, `_KONVENTIONEN.md`) liest die App mit ihrem eigenen Zugang (gemeinsamer Cache, unabhängig davon, welche Person zuerst kommt).
+- **Schnell-Check:** `GET https://app.nereo-os.de/healthz` → `source.ok` (Ablage lesbar), `delegated` („an“), `sync.expiration` in der Zukunft, `sync.lastSyncAt` aktuell.
 
 Alle Services liegen in **einem Monorepo**, sauber getrennt. Auf Coolify ergeben sich **4 Deployments**:
 
@@ -175,7 +193,7 @@ CLAUDE.md
 | **App-DB** (`nereo_app`) | ✅ Creds bekannt · nur intern erreichbar | `DATABASE_URL` in Coolify-`app`-Env. Interner Coolify-Hostname ⇒ **nur im Docker-Netz / in-Container** erreichbar, NICHT vom VPS-Host (siehe §3 Betriebsregel). |
 | **App-eigene KI** (`ANTHROPIC_API_KEY`) | ⏸️ **Bewusst AUS (Entscheidung 2026-06-19)** | Coolify-`app`-Env-Key ist absichtlich leer. **Die Datenraum-Analysen laufen vorerst über Claude Code (diese Session/Chat)** — read-only auf Struktur+Metadaten aus dem Index (`extractDataRooms` über `.data/graph-index.json` bzw. die `graph_index`-DB). Die eingebaute `apps/app/src/analyze.js` (würde Haiku 4.5 nutzen, identisches Schema 00–16 + ANALYSIS_SCHEMA) bleibt vorhanden, aber inaktiv, bis später ggf. ein Key gesetzt wird. **Getrennt** von „Claude Code". |
 
-**Health-Probe:** `GET https://app.nereo-os.de/healthz` → `{status, db, write, sync:{expiration,lastSyncAt,dirty}}`. Stand 2026-06-19: alles `ok`, Realtime-Subscription lebt.
+**Health-Probe:** `GET https://app.nereo-os.de/healthz` → `{status, db, write, delegated, source:{ok,name|reason}, sync:{expiration,lastSyncAt,dirty}}` (`source` seit 2026-11-23: zeigt, ob die SharePoint-Ablage mit dem App-Zugang lesbar ist — der 401-Ausfall vom 2026-11-20 wäre damit sofort sichtbar gewesen). Stand 2026-06-19: alles `ok`, Realtime-Subscription lebt.
 
 ### Offene Schalter, um „voll arbeitsfähig" zu werden (Entscheidung nötig)
 - **A — User per API anlegen:** ✅ **ERLEDIGT 2026-06-23.** M2M-Secret bekannt (liegt in `.secrets.local`); Claude kann User per Management-API anlegen — siehe Unterabschnitt „User in LogTo anlegen". (Optional noch offen: Secret zusätzlich als Coolify-`app`-Env, falls die App selbst User anlegen soll.)

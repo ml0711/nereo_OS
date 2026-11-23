@@ -216,7 +216,7 @@ async function buildSearchIndexNow(client) {
   if (!root) { const e = new Error(reason || "Workspace-Wurzel nicht auflösbar."); e.status = 503; throw e; }
   const kids = await client.listChildren(root.driveId, root.itemId);
   const companies = pickCompanies(kids); // Erlaubnisliste + Ausschlüsse (Bauregel §2/§3)
-  const [catalog, docTypes] = await Promise.all([loadAnalysisCatalog(client, root), loadDocTypes(client, root)]);
+  const [catalog, docTypes] = await Promise.all([loadAnalysisCatalog(navClient(), root), loadDocTypes(navClient(), root)]);
   const rows = await buildSearchIndex(client, { driveId: root.driveId, companies, docTypes });
   return { rows, facets: computeFacets(rows, catalog), builtAt: Date.now(), building: null };
 }
@@ -483,6 +483,20 @@ function requireAuth(req, res, next) {
 // status bleibt "ok", solange der Container läuft (Coolify soll ihn nicht wegen
 // DB-Problemen neustarten). db-Feld macht den degradierten Zustand (DB-first fällt
 // still auf Datei zurück) nach außen sichtbar — fürs Monitoring/Alerting.
+// Ist die SharePoint-Ablage mit dem App-Zugang lesbar? (max. 1 Prüfung je Minute; Wurzel ist 6 h gecacht)
+let _sourceCheck = { at: 0, val: null };
+async function sourceStatus() {
+  if (!_graphReady) return null;
+  if (_sourceCheck.val && Date.now() - _sourceCheck.at < 60_000) return _sourceCheck.val;
+  let val;
+  try {
+    const { root, reason } = await resolveRoot(navClient());
+    val = root ? { ok: true, name: root.name, owner: root.owner } : { ok: false, reason };
+  } catch (e) { val = { ok: false, reason: e.message }; }
+  _sourceCheck = { at: Date.now(), val };
+  return val;
+}
+
 app.get("/healthz", async (_req, res) => {
   const db = !process.env.DATABASE_URL ? "n/a" : (await pingDb()) ? "ok" : "down";
   // Sync-Watchdog: Subscription-Ablauf + Alter des letzten erfolgreichen Syncs nach außen sichtbar.
@@ -495,7 +509,9 @@ app.get("/healthz", async (_req, res) => {
       if (s) sync = { expiration: s.expiration, lastSyncAt: s.last_sync_at, dirty: s.dirty };
     } catch {}
   }
-  res.json({ service: "nereo-os-app", status: "ok", db, write: GRAPH_WRITE_ENABLED, sync });
+  const source = await sourceStatus();
+  const delegated = MS.enabled ? (MS.ready ? "an" : "fehlerhaft") : "aus";
+  res.json({ service: "nereo-os-app", status: "ok", db, write: GRAPH_WRITE_ENABLED, delegated, source, sync });
 });
 
 // ---------- Realtime-Sync: Graph-Webhook (öffentlich, NICHT requireAuth) ----------
@@ -1141,7 +1157,7 @@ app.get("/api/projekte", requireAuth, limit(navBudget, "Zu viele Anfragen — ku
     const { root, reason } = await resolveRoot(navClient());
     if (!root) return res.status(503).json({ error: reason || "Workspace-Wurzel nicht auflösbar." });
     const target = await descend(client, root, segments);
-    const catalog = await loadAnalysisCatalog(client, root);
+    const catalog = await loadAnalysisCatalog(navClient(), root);
     // full=1 → reiche Übersicht für die Seite „Projekte" (Dokumentzahlen aus dem gemeinsamen
     // Datei-Index; dynamische A-Spalten aus dem live gelesenen Katalog → A18 erscheint von selbst).
     if (req.query.full === "1") {
@@ -1171,7 +1187,7 @@ app.get("/api/projekt", requireAuth, limit(navBudget, "Zu viele Anfragen — kur
     const { root, reason } = await resolveRoot(navClient());
     if (!root) return res.status(503).json({ error: reason || "Workspace-Wurzel nicht auflösbar." });
     const target = await descend(client, root, segments);
-    const catalog = await loadAnalysisCatalog(client, root);
+    const catalog = await loadAnalysisCatalog(navClient(), root);
     // full=1 → Detail für die Seite „Projekte": Dokumentlisten je A-Kennung aus dem Datei-Index.
     if (req.query.full === "1") {
       const principal = principalOf(req);
@@ -1232,7 +1248,7 @@ app.get("/api/dashboard", requireAuth, limit(navBudget, "Zu viele Anfragen — k
     const LIST_CAP = 500;                    // Listen im Payload begrenzen (Kachelzahl bleibt die Gesamtzahl)
     const STALE_MS = 30 * 24 * 3600 * 1000;  // „ohne Änderung seit 30 Tagen"
     const WINDOW_MS = 7 * 24 * 3600 * 1000;  // „neu in den letzten 7 Tagen"
-    const catalog = await loadAnalysisCatalog(client, root);
+    const catalog = await loadAnalysisCatalog(navClient(), root);
     const out = { generatedAt: new Date().toISOString() };
 
     // --- Block 1: Projekte (nereo.development/04_Projekte) — DIESELBE Auswertung wie die Seite „Projekte". ---

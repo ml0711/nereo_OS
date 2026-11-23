@@ -1,6 +1,6 @@
 // Verbindungstest für die Microsoft-Graph-Anbindung (read-only).
 // Holt ein App-Token und liest SharePoint-Sites.
-//   node packages/graph-client/src/test-connection.js
+//   node packages/graph-client/src/check-connection.js
 // Lädt .env aus dem Repo-Root (ohne dotenv-Dependency).
 
 import { readFileSync } from "node:fs";

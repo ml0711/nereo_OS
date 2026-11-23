@@ -12,7 +12,7 @@
     "build": "echo \"TODO: build\" && exit 0",
     "lint": "echo \"TODO: lint\" && exit 0",
     "test": "node --test",
-    "graph:test": "node packages/graph-client/src/test-connection.js",
+    "graph:test": "node packages/graph-client/src/check-connection.js",
     "graph:export": "node packages/graph-client/src/export-index.js",
     "graph:subscribe": "node packages/graph-client/src/subscribe-cli.js",
     "graph:sync": "node packages/graph-client/src/sync-cli.js"
