@@ -17,9 +17,12 @@ const expISO = (minFromNow) => new Date(Date.now() + minFromNow * 60000).toISOSt
  * Gleicht die Drive-Subscription gegen den Soll-Zustand ab.
  * @returns { action: 'created'|'renewed'|'recreated'|'noop', id, expiration }
  */
-export async function reconcileSubscription({ client, driveId, notificationUrl }) {
+export async function reconcileSubscription({ client, driveId, notificationUrl, store = {} }) {
+  // store: nur für Tests austauschbar (Standard = App-Postgres).
+  const { loadSubscriptionByDrive: loadByDrive = loadSubscriptionByDrive, saveSubscription: save = saveSubscription,
+    updateExpiration: updateExp = updateExpiration, deleteSubscription: removeRow = storeDeleteSubscription } = store;
   const resource = `/drives/${driveId}/root`;
-  const existing = await loadSubscriptionByDrive(driveId);
+  const existing = await loadByDrive(driveId);
 
   // carryDeltaToken: der drive-RESOURCE-Delta-Token ist unabhängig von der Subscription-Lebensdauer und
   // bleibt nach einem Recreate gültig — übernehmen, sonst nimmt der nächste Sync den Bootstrap-Pfad
@@ -36,7 +39,7 @@ export async function reconcileSubscription({ client, driveId, notificationUrl }
       catch (e) { console.warn("[subscription] Delta-Token-Bootstrap fehlgeschlagen:", e.message); }
     }
     const sub = await client.createSubscription({ resource, notificationUrl, clientState, expirationDateTime, changeType: "updated" });
-    await saveSubscription({
+    await save({
       id: sub.id, kind: "drive", resource, driveId, notificationUrl, clientState,
       expiration: sub.expirationDateTime || expirationDateTime, deltaToken,
     });
@@ -52,7 +55,7 @@ export async function reconcileSubscription({ client, driveId, notificationUrl }
   // (delta_token erhalten → echter Catch-up statt Bootstrap).
   if (exp <= now || existing.notification_url !== notificationUrl) {
     try { await client.deleteSubscription(existing.id); } catch {}
-    await storeDeleteSubscription(existing.id);
+    await removeRow(existing.id);
     return { action: "recreated", ...(await create(existing.delta_token)) };
   }
 
@@ -61,11 +64,18 @@ export async function reconcileSubscription({ client, driveId, notificationUrl }
     try {
       const r = await client.renewSubscription(existing.id, expISO(LIFETIME_MIN));
       const newExp = r.expirationDateTime || expISO(LIFETIME_MIN);
-      await updateExpiration(existing.id, newExp);
+      await updateExp(existing.id, newExp);
       return { action: "renewed", id: existing.id, expiration: newExp };
     } catch (e) {
-      if (e.status === 404) { // Graph hat sie entsorgt → neu anlegen (delta_token erhalten)
-        await storeDeleteSubscription(existing.id);
+      // 404: Graph hat sie entsorgt. 401/403: Verlängern braucht laut Microsoft evtl. ein Schreibrecht,
+      // das nereo_os bewusst nicht hat — NEU ANLEGEN braucht nur Files.Read.All. In beiden Fällen
+      // alte Subscription verwerfen und neu anlegen (delta_token erhalten → keine Änderung geht verloren).
+      if (e.status === 404 || e.status === 401 || e.status === 403) {
+        if (e.status !== 404) {
+          console.warn(`[subscription] Verlängern abgelehnt (${e.status}) → neu anlegen`);
+          try { await client.deleteSubscription(existing.id); } catch {}
+        }
+        await removeRow(existing.id);
         return { action: "recreated", ...(await create(existing.delta_token)) };
       }
       throw e;
