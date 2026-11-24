@@ -184,6 +184,11 @@ function legacyGuard(req, res, next) {
 // wir fragen Microsoft nicht bei jedem Klick / laufen nicht in Abfragegrenzen, neue Ordner erscheinen
 // dennoch spätestens nach 1 Min — und "Neu laden" (refresh) holt sofort frisch.
 const FS_TTL_MS = 60 * 1000;
+// Meldet der Abgleich (Webhook oder Poll) eine Änderung in SharePoint, werden alle Inhalts-Zwischenspeicher
+// verworfen → Ordneransicht, Suche und Projekte zeigen Neues beim nächsten Öffnen (statt erst nach Ablauf).
+function invalidateContentCaches() {
+  _fsCache.clear(); _searchIndex.clear(); _projIndex.clear();
+}
 const _fsCache = new Map(); // `${principal}|${driveId}|${itemId}` -> { kids, at }
 async function cachedListChildren(client, principal, driveId, itemId, { refresh = false } = {}) {
   const key = `${principal}|${driveId}|${itemId}`;
@@ -324,6 +329,7 @@ async function processDirtyOnce() {
             subscriptionId: claimed.id, prevToken: claimed.delta_token,
           });
           await finishProcessing(claimed.id, { lastSyncAt: new Date() });
+          if (r.changed) invalidateContentCaches();
           if (r.changed) console.log(`[sync] ${r.items} Änderung(en), ${r.affected.length} Datenraum/-räume markiert`);
         } catch (e) {
           // Lease lösen; dirty bleibt false. Verlorene Änderung holt das Delta-Poll-Sicherheitsnetz nach.
@@ -392,7 +398,8 @@ async function pollOnce() {
         client: navClient(), driveId: root.driveId, rootItemId: root.itemId, rootName: root.name, rootIsDriveRoot: root.isDriveRoot,
         subscriptionId: claimed.id, prevToken: claimed.delta_token,
       });
-      if (r.changed) console.log(`[poll] ${r.items} Änderung(en), ${r.affected.length} Datenraum/-räume markiert`);
+      if (r.changed) invalidateContentCaches();
+          if (r.changed) console.log(`[poll] ${r.items} Änderung(en), ${r.affected.length} Datenraum/-räume markiert`);
     } finally {
       await finishProcessing(claimed.id, { lastSyncAt: new Date() });
     }
@@ -1418,7 +1425,9 @@ if (process.env.DATABASE_URL) {
 if (process.env.DATABASE_URL && _graphReady) {
   startupReconcile();
   setInterval(() => { reconcileSelf(); }, 30 * 60 * 1000).unref();
-  setInterval(() => { pollOnce(); }, 20 * 60 * 1000).unref();
+  // Abgleich-Takt (Sicherheitsnetz + einziger Weg, falls Echtzeit-Webhook fehlt): Vorgabe 5 Min, ENV SYNC_POLL_MIN.
+  const pollMin = Math.max(1, Number(process.env.SYNC_POLL_MIN) || 5);
+  setInterval(() => { pollOnce(); }, pollMin * 60 * 1000).unref();
 }
 
 app.listen(PORT, () =>
